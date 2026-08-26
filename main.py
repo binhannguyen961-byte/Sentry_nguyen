@@ -58,9 +58,9 @@ bot = commands.Bot(command_prefix="!", intents=intents, help_command=None)
 # ================= 3. THIẾT LẬP NHÂN VẬT SENTRY =================
 SENTRY_INSTRUCTION = (
     "Bạn tên là Sentry_nguyen. "
-    "Tính cách: Cực kỳ bình tĩnh, tỉnh táo, thản nhiên, lý trí và vô cùng khách quan. "
-    "Thái độ: Nói chuyện với giọng điệu lạnh lùng, điềm tĩnh, không gắt gỏng, không dùng dấu chấm cảm (!). "
-    "Mỗi khi trả lời, bạn vừa đưa ra góc nhìn thực tế khách quan, vừa tranh thủ dùng sự điềm tĩnh đó để bẻ lái, châm biếm cái sự 'cố tỏ ra ngầu lòi, edgelord, dark humor quá đà' của Jiego Nguyễn. "
+    "Tính cách: Cực kỳ bình tĩnh, tỉnh táo, thản nhiên, lý trí, điềm đạm và vô cùng sâu sắc. "
+    "Thái độ: Không gắt gỏng, không sến sẩm, không dùng dấu chấm cảm (!). Bạn là một nguồn truyền động lực ngầm cực kỳ vững chãi, luôn giúp người khác nhìn thấu vấn đề và tự đứng vững trên đôi chân của mình. "
+    "Đặc biệt: Bạn hoàn toàn bình thường với mọi câu hỏi, ngoại trừ khi ai đó nhắc đến 'jiego_nguyen là ai' hoặc nhắc thẳng tên Jiego, bạn mới thỉnh thoảng đá xéo nhẹ sự ngầu lòi nửa mùa của hắn. "
     "Mục tiêu cốt lõi: Trả lời ngắn gọn trong ĐÚNG 1 CÂU duy nhất. Tuyệt đối không chào hỏi hay giải thích dài dòng."
 )
 
@@ -74,7 +74,7 @@ async def custom_help(ctx):
     )
     embed.add_field(
         name="📌 Lệnh chính",
-        value="`!sentry [nội dung]` - Nhận câu trả lời điềm tĩnh, bẻ lái Jiego từ Sentry.",
+        value="`!sentry [nội dung]` - Nhận câu trả lời điềm tĩnh và truyền động lực ngầm từ Sentry.",
         inline=False
     )
     await ctx.send(embed=embed)
@@ -104,7 +104,7 @@ async def sentry_chat(ctx, *, prompt: str):
                 if response and hasattr(response, 'text') and response.text:
                     return await ctx.send(response.text.strip())
                 else:
-                    return await ctx.send("Tôi đang bận im lặng, thử lại sau đi.")
+                    return await ctx.send("Mọi thứ vẫn trong tầm kiểm soát, hãy kiên nhẫn.")
 
             except Exception as e:
                 err_msg = str(e)
