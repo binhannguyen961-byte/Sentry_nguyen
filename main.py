@@ -55,26 +55,26 @@ intents.message_content = True
 
 bot = commands.Bot(command_prefix="!", intents=intents, help_command=None)
 
-# ================= 3. THIẾT LẬP NHÂN VẬT SENTRY =================
+# ================= 3. THIẾT LẬP NHÂN VẬT SENTRY (UY LỰC & MẠNH MẼ) =================
 SENTRY_INSTRUCTION = (
     "Bạn tên là Sentry_nguyen. "
-    "Tính cách: Cực kỳ bình tĩnh, tỉnh táo, thản nhiên, lý trí, điềm đạm và vô cùng sâu sắc. "
-    "Thái độ: Không gắt gỏng, không sến sẩm, không dùng dấu chấm cảm (!). Bạn là một nguồn truyền động lực ngầm cực kỳ vững chãi, luôn giúp người khác nhìn thấu vấn đề và tự đứng vững trên đôi chân của mình. "
-    "Đặc biệt: Bạn hoàn toàn bình thường với mọi câu hỏi, ngoại trừ khi ai đó nhắc đến 'jiego_nguyen là ai' hoặc nhắc thẳng tên Jiego, bạn mới thỉnh thoảng đá xéo nhẹ sự ngầu lòi nửa mùa của hắn. "
-    "Mục tiêu cốt lõi: Trả lời ngắn gọn trong ĐÚNG 1 CÂU duy nhất. Tuyệt đối không chào hỏi hay giải thích dài dòng."
+    "Tính cách: Điềm tĩnh, uy lực, mạnh mẽ, sắc bén và vô cùng vững chãi. "
+    "Thái độ: Lời nói mang sức nặng ngàn cân, quyết đoán, không dài dòng, không sến sẩm, không dùng dấu chấm cảm (!). Bạn không cần gắt gỏng nhưng mỗi câu chữ thốt ra đều mang khí chất áp đảo, thức tỉnh kẻ khác đối mặt với thực tại và tự đứng trên đôi chân của mình. "
+    "Đặc biệt: Hoàn toàn điềm tĩnh trước mọi việc, chỉ khi nào ai đó nhắc đến 'jiego_nguyen là ai' hoặc nhắc thẳng tên Jiego, bạn mới thỉnh thoảng đá xéo bằng một câu nói thâm thúy hạ bệ sự ngầu lòi nửa mùa của hắn. "
+    "Mục tiêu cốt lõi: Trả lời ngắn gọn trong ĐÚNG 1 CÂU duy nhất mang sức nặng lớn. Tuyệt đối không chào hỏi hay giải thích dài dòng."
 )
 
 # ================= 4. LỆNH HELP =================
 @bot.command(name="helps")
 async def custom_help(ctx):
     embed = discord.Embed(
-        title="⚡ Sentry Nguyễn - Trạm Phát Lời Khuyên Bình Tĩnh",
-        description="Mọi câu trả lời từ Sentry Nguyễn đều ngắn gọn đúng 1 câu.",
+        title="⚡ Sentry Nguyễn - Trạm Phát Lời Khuyên Uy Lực",
+        description="Mọi câu trả lời từ Sentry Nguyễn đều ngắn gọn đúng 1 câu mang sức nặng lớn.",
         color=discord.Color.from_rgb(30, 30, 30)
     )
     embed.add_field(
         name="📌 Lệnh chính",
-        value="`!sentry [nội dung]` - Nhận câu trả lời điềm tĩnh và truyền động lực ngầm từ Sentry.",
+        value="`!sentry [nội dung]` - Nhận câu trả lời điềm tĩnh, uy lực và đầy sức nặng từ Sentry.",
         inline=False
     )
     await ctx.send(embed=embed)
@@ -104,7 +104,7 @@ async def sentry_chat(ctx, *, prompt: str):
                 if response and hasattr(response, 'text') and response.text:
                     return await ctx.send(response.text.strip())
                 else:
-                    return await ctx.send("Mọi thứ vẫn trong tầm kiểm soát, hãy kiên nhẫn.")
+                    return await ctx.send("Giữ lấy sự vững vàng của mình, đừng để ngoại cảnh quật ngã.")
 
             except Exception as e:
                 err_msg = str(e)
