@@ -49,15 +49,22 @@ DAMAGE_CALCULATOR_PROMPT = (
     "Ví dụ: 40|Trúng nóc xe thiết giáp qua dẫn đường ATGM, phá hủy cấu trúc -40% HP."
 )
 
-# ================= 3. QUẢN LÝ PHIÊN CO-OP (TANK & HELI) =================
+# ================= 3. QUẢN LÝ PHIÊN CO-OP =================
 
 
 class CoOpSession:
 
-  def __init__(self, members, mode_type, sub_mode=3, faction="Nga", heli_model="Ka-50"):
+  def __init__(
+      self,
+      members,
+      mode_type,
+      sub_mode=3,
+      faction="Nga",
+      heli_model="Ka-50",
+  ):
     self.members = members
     self.mode_type = mode_type  # "tank" hoặc "heli"
-    self.sub_mode = sub_mode  # 3 hoặc 4 (cho tank), 1 hoặc 2 (cho heli)
+    self.sub_mode = sub_mode  # 3/4 cho tank, 1/2 cho heli
     self.faction = faction
     self.heli_model = heli_model
 
@@ -97,7 +104,112 @@ class CoOpSession:
       self.lock_target_info = "Khí tài không trang bị Radar (Ngắm thủ công)"
 
 
-# ================= 4. GIAO DIỆN TANK =================
+# ================= 4. HÀM TẠO ASCII HUD GÓC NHÌN RIÊNG =================
+
+
+def generate_role_ascii_map(coop: CoOpSession, role: str) -> str:
+  """Tạo giao diện ASCII HUD riêng biệt cho từng vị trí kíp lái/kíp bay."""
+  unit = (
+      coop.team.split("(")[-1].replace(")", "")
+      if "(" in coop.team
+      else coop.team
+  )
+  unit_tag = f"[{unit[:10]:^10}]"
+
+  # --- TANK VIEWS ---
+  if coop.mode_type == "tank":
+    if role == "commander":
+      header = (
+          f"[ COMMANDER OVERVIEW ] - HƯỚNG CHÍNH: {coop.turret_angle}H | LƯỚI"
+          " TRINH SÁT"
+      )
+      enemy_sec = (
+          "   [ Ô 1,1 ]      [ Ô 1,2 ]      [ Ô 1,3 ]   \n   v              v  "
+          "            v            \n  [ T-72 B3 ]    [ BMP-3 ]    [ BẮT CẶP"
+          " ATGM ]"
+          if coop.enemy_hp > 0
+          else "             💥 TOÀN BỘ MỤC TIÊU ĐÃ BỊ TIÊU DIỆT 💥             "
+      )
+      bottom_info = (
+          f"LÁI XE: {coop.driver_pos[:18]} | ĐÃ XÁC ĐỊNH MỤC TIÊU CẦN KHAI HỎA"
+      )
+
+    elif role == "driver":
+      header = f"[ DRIVER HUD ] - ĐIỀU KHIỂN THÂN XE & CƠ ĐỘNG"
+      enemy_sec = (
+          f"            ▲ PHÍA TRƯỚC: {coop.driver_pos.upper()} ▲            \n"
+          "   [ ĐẤT CẰN ]         [ CẮT GỜ ĐẤT ]         [ VÙNG NÚI NẤP ]   \n"
+          "   ═══════════════════════════════════════════════════════════"
+      )
+      bottom_info = f"ĐỘNG CƠ: HOẠT ĐỘNG 100% | TRẠNG THÁI: {coop.driver_pos}"
+
+    else:  # gunner & loader
+      header = (
+          f"[ GUNNER FCS SIGHT ] - GÓC THÁP: {coop.turret_angle}H | ĐẠN:"
+          f" {coop.current_ammo}"
+      )
+      enemy_sec = (
+          "                     |                                   \n"
+          "             ───  [  +  ]  ───   <- TÂM NGẮM FCS         \n"
+          f"                     |   MỤC TIÊU: {coop.enemy_hp}% HP   "
+          if coop.enemy_hp > 0
+          else "                     💥 MỤC TIÊU ĐÃ BỊ PHÁ HỦY 💥"
+      )
+      bottom_info = (
+          f"NẠP ĐẠN: {'SẴN SÀNG' if coop.loader_cooldown==0 else f'ĐANG NẠP ({coop.loader_cooldown}s)'} | ĐẠN:"
+          f" {coop.current_ammo}"
+      )
+
+  # --- HELI VIEWS ---
+  else:
+    if role == "pilot":
+      header = f"[ HELI PILOT HUD ] - KHÍ TÀI: {coop.heli_model} | ĐIỀU KHIỂN BAY"
+      sam_alert = (
+          "🚨 [ TÊN LỬA SAM ĐANG KHÓA! THẢ FLARE HOẶC NÉ GẤP! ] 🚨"
+          if coop.under_sam_attack
+          else "         [ BẦU TRỜI AN TOÀN - DUY TRÌ ĐỘ CAO ]         "
+      )
+      enemy_sec = f"   TRẠNG THÁI BAY: {coop.driver_pos.upper()}\n{sam_alert}\n   ═══════════════════════════════════════════════════════════"
+      bottom_info = (
+          f"CẢNH BÁO SAM: {'🔴 NGUY HIỂM' if coop.under_sam_attack else '🟢 AN TOÀN'} | HP:"
+          f" {coop.hp}%"
+      )
+
+    else:  # gunner
+      header = (
+          f"[ HELI GUNNER RADAR ] - KHÓA TẬP TRUNG | KHÍ TÀI: {coop.heli_model}"
+      )
+      radar_status = (
+          "🎯 [ RADAR LOCK-ON: MỤC TIÊU MẶT ĐẤT ]"
+          if coop.radar_locked
+          else (
+              "🔍 [ RADAR SCANNING... / KHÔNG THẤY TÍN HIỆU ]"
+              if coop.has_radar
+              else "👁️ [ NGẮM BẮN THỦ CÔNG - KHÔNG CÓ RADAR ]"
+          )
+      )
+      enemy_sec = f"                     |                                   \n         {radar_status}\n                     |   MỤC TIÊU: {coop.enemy_hp}% HP   "
+      bottom_info = (
+          f"KHÓA MỤC TIÊU: {coop.lock_target_info} | VŨ KHÍ: {coop.current_ammo}"
+      )
+
+  return f"""```text
+╔══════════════════════════════════════════════════════════════════╗
+║ {header:<64} ║
+╠══════════════════════════════════════════════════════════════════╣
+║                                                                  ║
+{enemy_sec}
+║   ────────────────────────────────────────────────────────────   ║
+║                         ^          ^                             ║
+║             {unit_tag} <--- [ THÂN XE / KHÍ TÀI ]                 ║
+║                         ^          ^                             ║
+╠══════════════════════════════════════════════════════════════════╣
+║ {bottom_info:<64} ║
+╚══════════════════════════════════════════════════════════════════╝
+```"""
+
+
+# ================= 5. BUTTON VIEWS =================
 
 
 class CommanderCaroView(discord.ui.View):
@@ -165,9 +277,6 @@ class DriverControlView(discord.ui.View):
   @discord.ui.button(label="⬇️ Lùi ẩn nấp", style=discord.ButtonStyle.danger, row=1)
   async def bs(self, interaction: discord.Interaction, button: discord.ui.Button):
     await self.move(interaction, "Lùi về sau gờ đất")
-
-
-# ================= 5. GIAO DIỆN TRỰC THĂNG =================
 
 
 class HeliPilotView(discord.ui.View):
@@ -274,7 +383,8 @@ class HeliGunnerCommanderView(discord.ui.View):
 
     if not self.coop.has_radar:
       return await interaction.response.send_message(
-          f"⚠️ Khí tài **{self.coop.heli_model}** không được trang bị hệ thống Radar! Bạn bắt buộc phải ngắm bắn thủ công.",
+          f"⚠️ Khí tài **{self.coop.heli_model}** không được trang bị hệ thống"
+          " Radar! Bạn bắt buộc phải ngắm bắn thủ công.",
           ephemeral=True,
       )
 
@@ -402,9 +512,6 @@ class HeliGunnerCommanderView(discord.ui.View):
     await interaction.followup.send(embed=embed)
 
 
-# ================= 6. GIAO DIỆN PHÁO THỦ TANK =================
-
-
 class GunnerControlView(discord.ui.View):
 
   def __init__(self, coop: CoOpSession):
@@ -463,9 +570,7 @@ class GunnerControlView(discord.ui.View):
       pass
 
     self.coop.enemy_hp = max(0, self.coop.enemy_hp - damage_dealt)
-    enemy_dmg = (
-        random.randint(10, 30) if self.coop.enemy_hp > 0 else 0
-    )
+    enemy_dmg = random.randint(10, 30) if self.coop.enemy_hp > 0 else 0
     self.coop.hp = max(0, self.coop.hp - enemy_dmg)
 
     embed = discord.Embed(
@@ -524,7 +629,7 @@ class LoaderControlView(discord.ui.View):
     await self.ammo(interaction, "HE")
 
 
-# ================= 7. LỆNH HƯỚNG DẪN (!Chelps) =================
+# ================= 6. LỆNH HƯỚNG DẪN (!Chelps) =================
 
 
 @bot.command(name="Chelps")
@@ -555,7 +660,7 @@ async def chelps_cmd(ctx):
   await ctx.send(embed=embed)
 
 
-# ================= 8. LỆNH KHỞI TẠO PHÒNG =================
+# ================= 7. LỆNH KHỞI TẠO PHÒNG =================
 
 
 @bot.command(name="tank-coop")
@@ -585,7 +690,11 @@ async def tank_coop_cmd(
           f"👑 **Chỉ huy:** {coop.commander.mention}\n"
           f"🏎️ **Lái xe:** {coop.driver.mention}\n"
           f"🎯 **Pháo thủ:** {coop.gunner.mention}\n"
-          + (f"📦 **Nạp đạn:** {coop.loader.mention}\n" if mode == 4 and coop.loader else "")
+          + (
+              f"📦 **Nạp đạn:** {coop.loader.mention}\n"
+              if mode == 4 and coop.loader
+              else ""
+          )
           + "\n👉 Gõ **`!start`** để xuất kích!"
       ),
       color=discord.Color.blue(),
@@ -595,7 +704,11 @@ async def tank_coop_cmd(
 
 @bot.command(name="heli-coop")
 async def heli_coop_cmd(
-    ctx, faction: str, heli_model: str, m1: discord.Member = None, m2: discord.Member = None
+    ctx,
+    faction: str,
+    heli_model: str,
+    m1: discord.Member = None,
+    m2: discord.Member = None,
 ):
   if m1 is None:
     sub_mode = 1
@@ -635,7 +748,7 @@ async def heli_coop_cmd(
   await ctx.send(embed=embed)
 
 
-# ================= 9. LỆNH ĐỔI GÓC NHÌN SOLO (!Pv / !Gv) =================
+# ================= 8. LỆNH ĐỔI GÓC NHÌN SOLO (!Pv / !Gv) =================
 
 
 @bot.command(name="Pv")
@@ -660,92 +773,168 @@ async def gview_full(ctx):
 
 async def switch_view_handler(ctx, view_type):
   if ctx.channel.id not in coop_sessions:
-    return await ctx.send("⚠️ Không có phiên chiến đấu nào đang hoạt động ở kênh này.")
+    return await ctx.send(
+        "⚠️ Không có phiên chiến đấu nào đang hoạt động ở kênh này."
+    )
   coop = coop_sessions[ctx.channel.id]
   if coop.mode_type != "heli" or coop.sub_mode != 1:
-    return await ctx.send("⚠️ Lệnh này chỉ dành riêng cho chế độ Trực thăng Solo 1 người!")
+    return await ctx.send(
+        "⚠️ Lệnh này chỉ dành riêng cho chế độ Trực thăng Solo 1 người!"
+    )
 
   coop.current_view = view_type
   if view_type == "pilot":
     embed = discord.Embed(
         title="🛫 ĐÃ CHUYỂN SANG GÓC NHÌN PHI CÔNG (PILOT VIEW)",
-        description="Bạn đang nắm quyền điều khiển hướng bay, thả Flare và né tránh SAM.",
+        description=f"{generate_role_ascii_map(coop, 'pilot')}\nBạn đang điều khiển hướng bay, mồi bẫy Flare và né SAM.",
         color=discord.Color.green(),
     )
     await ctx.send(embed=embed, view=HeliPilotView(coop))
   else:
     embed = discord.Embed(
         title="🎯 ĐÃ CHUYỂN SANG GÓC NHÌN XẠ THỦ (GUNNER VIEW)",
-        description=f"Bạn đang ngồi ghế xạ thủ. Khí tài: `{coop.heli_model}` | Radar: `{'Có' if coop.has_radar else 'Không'}`.",
+        description=f"{generate_role_ascii_map(coop, 'gunner')}\nBạn đang sử dụng hệ thống Radar và kính ngắm phóng ATGM.",
         color=discord.Color.orange(),
     )
     await ctx.send(embed=embed, view=HeliGunnerCommanderView(coop))
 
 
+# ================= 9. LỆNH XUẤT KÍCH VỚI GÓC NHÌN RIÊNG BIỆT (!start) =================
+
+
 @bot.command(name="start")
 async def start_cmd(ctx):
   if ctx.channel.id not in coop_sessions:
-    return await ctx.send("⚠️ Chưa có phiên chiến dịch! Gõ lệnh khởi tạo trước.")
+    return await ctx.send(
+        "⚠️ Chưa có phiên chiến dịch! Gõ lệnh khởi tạo trước."
+    )
+
   coop = coop_sessions[ctx.channel.id]
 
+  # --- XUẤT KÍCH TANK ---
   if coop.mode_type == "tank":
-    embed = discord.Embed(
-        title=f"🚀 TANK KHÍ TÀI: {coop.team.upper()}",
+    # 1. Chỉ huy
+    embed_cmd = discord.Embed(
+        title=f"👑 [COMMANDER HUD] KHÍ TÀI {coop.team.upper()}",
         description=(
-            f"❤️ HP Xe: **{coop.hp}%** | 🎯 HP Địch: **{coop.enemy_hp}%**\n"
-            f"⚙️ Vị trí: `{coop.driver_pos}` | 📦 Đạn: `{coop.current_ammo}`\n"
-            f"🔄 Tháp pháo: `{coop.turret_angle}H`\n\n"
-            f"📌 **Trạng thái:** *{coop.last_log}*"
-        ),
-        color=discord.Color.green(),
-    )
-    await ctx.send(
-        "👑 **[COMMANDER] Bảng trinh sát caro:**",
-        embed=embed,
-        view=CommanderCaroView(coop),
-    )
-    await ctx.send(
-        "🏎️ **[DRIVER] Bảng điều khiển hướng lái:**",
-        view=DriverControlView(coop),
-    )
-    await ctx.send(
-        "🎯 **[GUNNER] Giao diện ngắm bắn FCS:**", view=GunnerControlView(coop),
-    )
-    if coop.sub_mode == 4 and coop.loader:
-      await ctx.send(
-          "📦 **[LOADER] Kho đạn (Cooldown 8s):**",
-          view=LoaderControlView(coop),
-      )
-  else:
-    embed = discord.Embed(
-        title=f"🚁 TRỰC THĂNG KHÍ TÀI: {coop.team.upper()}",
-        description=(
-            f"❤️ HP Trực thăng: **{coop.hp}%** | 🎯 HP Mục tiêu: **{coop.enemy_hp}%**\n"
-            f"🛫 Trạng thái bay: `{coop.driver_pos}` | 📡 Radar:"
-            f" `{coop.lock_target_info}`\n"
-            f"🚨 **Tình trạng SAM:** `{coop.sam_warning_msg}`\n\n"
-            f"📌 **Trạng thái:** *{coop.last_log}*"
+            f"{generate_role_ascii_map(coop, 'commander')}\n📌 **Nhật ký:**"
+            f" *{coop.last_log}*"
         ),
         color=discord.Color.gold(),
     )
-    if coop.sub_mode == 1:
+    await ctx.send(
+        content=f"👑 **Chỉ huy {coop.commander.mention}:**",
+        embed=embed_cmd,
+        view=CommanderCaroView(coop),
+    )
+
+    # 2. Lái xe
+    embed_drv = discord.Embed(
+        title=f"🏎️ [DRIVER HUD] KHÍ TÀI {coop.team.upper()}",
+        description=(
+            f"{generate_role_ascii_map(coop, 'driver')}\n⚙️ **Vị trí hiện"
+            f" tại:** `{coop.driver_pos}`"
+        ),
+        color=discord.Color.blue(),
+    )
+    await ctx.send(
+        content=f"🏎️ **Lái xe {coop.driver.mention}:**",
+        embed=embed_drv,
+        view=DriverControlView(coop),
+    )
+
+    # 3. Pháo thủ
+    embed_gnr = discord.Embed(
+        title=f"🎯 [GUNNER FCS HUD] KHÍ TÀI {coop.team.upper()}",
+        description=(
+            f"{generate_role_ascii_map(coop, 'gunner')}\n🔄 **Hướng tháp"
+            f" pháo:** `{coop.turret_angle}H`"
+        ),
+        color=discord.Color.red(),
+    )
+    await ctx.send(
+        content=f"🎯 **Pháo thủ {coop.gunner.mention}:**",
+        embed=embed_gnr,
+        view=GunnerControlView(coop),
+    )
+
+    # 4. Nạp đạn viên (4 người)
+    if coop.sub_mode == 4 and coop.loader:
+      embed_ldr = discord.Embed(
+          title=f"📦 [LOADER HUD] KHÍ TÀI {coop.team.upper()}",
+          description=(
+              f"{generate_role_ascii_map(coop, 'loader')}\n📦 **Đạn sẵn"
+              f" sàng:** `{coop.current_ammo}`"
+          ),
+          color=discord.Color.green(),
+      )
       await ctx.send(
-          f"🕹️ **Đang ở góc nhìn:** `{'PHI CÔNG (Pilot)' if coop.current_view=='pilot' else 'XẠ THỦ (Gunner)'}`\n*(Dùng lệnh `!Pv` hoặc `!Gv` để chuyển đổi)*",
-          embed=embed,
-          view=HeliPilotView(coop)
-          if coop.current_view == "pilot"
-          else HeliGunnerCommanderView(coop),
+          content=(
+              f"📦 **Nạp đạn viên {coop.loader.mention}:** *(Dùng chung góc"
+              " nhìn FCS với Pháo thủ)*"
+          ),
+          embed=embed_ldr,
+          view=LoaderControlView(coop),
+      )
+
+  # --- XUẤT KÍCH HELI ---
+  else:
+    if coop.sub_mode == 1:
+      role_curr = coop.current_view
+      embed_solo = discord.Embed(
+          title=f"🚁 [SOLO HELI HUD - {role_curr.upper()}] {coop.team.upper()}",
+          description=(
+              f"{generate_role_ascii_map(coop, role_curr)}\n📌 **Trạng"
+              f" thái:** *{coop.last_log}*"
+          ),
+          color=discord.Color.purple(),
+      )
+      view_to_show = (
+          HeliPilotView(coop)
+          if role_curr == "pilot"
+          else HeliGunnerCommanderView(coop)
+      )
+      await ctx.send(
+          content=(
+              f"🕹️ **Góc nhìn hiện tại:** `{role_curr.upper()}` *(Gõ `!Pv` hoặc"
+              " `!Gv` để đổi)*"
+          ),
+          embed=embed_solo,
+          view=view_to_show,
       )
     else:
+      # Phi công
+      embed_plt = discord.Embed(
+          title=f"🛫 [PILOT HUD] TRỰC THĂNG {coop.team.upper()}",
+          description=(
+              f"{generate_role_ascii_map(coop, 'pilot')}\n🚨 **Tình trạng"
+              f" SAM:** `{coop.sam_warning_msg}`"
+          ),
+          color=discord.Color.green(),
+      )
       await ctx.send(
-          "🛫 **[PILOT] Bảng điều khiển chuyến bay:**",
-          embed=embed,
+          content=f"🛫 **Phi công {coop.pilot.mention}:**",
+          embed=embed_plt,
           view=HeliPilotView(coop),
       )
+
+      # Xạ thủ
+      embed_gnr_heli = discord.Embed(
+          title=f"🎯 [GUNNER RADAR HUD] TRỰC THĂNG {coop.team.upper()}",
+          description=(
+              f"{generate_role_ascii_map(coop, 'gunner')}\n📡 **Mục tiêu:**"
+              f" `{coop.lock_target_info}`"
+          ),
+          color=discord.Color.orange(),
+      )
       await ctx.send(
-          "🎯 **[GUNNER] Màn hình Radar & Ngắm bắn:**",
+          content=f"🎯 **Xạ thủ {coop.gunner_cmd.mention}:**",
+          embed=embed_gnr_heli,
           view=HeliGunnerCommanderView(coop),
       )
+
+
+# ================= 10. EVENT HANDLERS =================
 
 
 @bot.event
