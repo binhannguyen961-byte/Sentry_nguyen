@@ -104,7 +104,7 @@ class CoOpSession:
       self.lock_target_info = "Ngắm thủ công"
 
 
-# ================= 4. INFANTRY SESSION CLASS (LOST FRONT / DOOM) =================
+# ================= 4. INFANTRY SESSION CLASS =================
 
 
 class InfantrySession:
@@ -212,7 +212,7 @@ def generate_role_ascii_map(coop: CoOpSession, role: str) -> str:
 ```"""
 
 
-# ================= 6. LOGIC SAM & BỘ BINH VIEWS =================
+# ================= 6. LOGIC SAM & VIEWS =================
 
 
 async def trigger_enemy_sam_attack(channel, coop: CoOpSession):
@@ -477,21 +477,26 @@ class HeliGunnerCommanderView(discord.ui.View):
 
     await interaction.response.defer(thinking=True)
 
-    prompt = (
-        f"Vũ khí: {self.coop.current_ammo}. Bắn từ {self.coop.heli_model}."
-        f" Trạng thái lock: {self.coop.lock_target_info}."
-    )
-    damage_dealt = 30
-    tech_msg = "Phóng tên lửa ATGM trúng mục tiêu."
+    damage_dealt = random.randint(30, 45)
+    tech_msg = "Phóng tên lửa ATGM trúng trực tiếp mục tiêu."
 
     try:
-      response = ai_client.models.generate_content(
-          model="gemini-2.5-flash",
-          contents=prompt,
-          config=types.GenerateContentConfig(
-              system_instruction=DAMAGE_CALCULATOR_PROMPT
-          ),
-      )
+
+      async def call_gemini():
+        prompt = (
+            f"Vũ khí: {self.coop.current_ammo}. Bắn từ {self.coop.heli_model}."
+            f" Trạng thái lock: {self.coop.lock_target_info}."
+        )
+        return ai_client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                system_instruction=DAMAGE_CALCULATOR_PROMPT
+            ),
+        )
+
+      response = await asyncio.wait_for(call_gemini(), timeout=2.5)
+
       if response and response.text:
         parts = response.text.strip().split("|")
         if len(parts) == 2:
@@ -512,6 +517,7 @@ class HeliGunnerCommanderView(discord.ui.View):
         if self.coop.enemy_hp <= 0
         else discord.Color.orange(),
     )
+
     await interaction.followup.send(embed=embed, delete_after=5)
 
     if random.random() < 0.6 and self.coop.enemy_hp > 0:
