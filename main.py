@@ -42,13 +42,10 @@ coop_sessions = {}
 
 DAMAGE_CALCULATOR_PROMPT = (
     "Bạn là hệ thống tính toán sát thương (Damage Engine) chiến trường hiện"
-    " đại. "
-    "Dựa vào vũ khí, góc ngắm và trạng thái cơ động, hãy đưa ra sát thương %"
-    " chính xác "
-    "và một dòng thông báo kỹ thuật quân sự sắc lạnh. "
-    "Cấu trúc trả lời bắt buộc: [SỐ_%_SÁT_THƯƠNG]|[THÔNG_BÁO_KỸ_THUẬT]. "
-    "Ví dụ: 40|Trúng nóc xe thiết giáp qua dẫn đường ATGM, phá hủy cấu trúc"
-    " -40% HP."
+    " đại. Dựa vào vũ khí, góc ngắm và trạng thái cơ động, hãy đưa ra sát"
+    " thương % chính xác và một dòng thông báo kỹ thuật quân sự sắc lạnh. Cấu"
+    " trúc trả lời bắt buộc: [SỐ_%_SÁT_THƯƠNG]|[THÔNG_BÁO_KỸ_THUẬT]. Ví dụ:"
+    " 40|Trúng nóc xe thiết giáp qua dẫn đường ATGM, phá hủy cấu trúc -40% HP."
 )
 
 # ================= 3. CO-OP SESSION CLASS =================
@@ -122,7 +119,8 @@ def generate_role_ascii_map(coop: CoOpSession, role: str) -> str:
     if role == "commander":
       header = f"COMMANDER | HƯỚNG:{coop.turret_angle}H"
       enemy_sec = (
-          " [1,1]    [1,2]    [1,3] \n  v        v        v   \n [T72]    [BMP]   [ATGM]"
+          " [1,1]    [1,2]    [1,3] \n  v        v        v   \n [T72]    [BMP]"
+          "   [ATGM]"
           if coop.enemy_hp > 0
           else "   💥 TIÊU DIỆT MỤC TIÊU 💥   "
       )
@@ -189,11 +187,11 @@ def generate_role_ascii_map(coop: CoOpSession, role: str) -> str:
 ```"""
 
 
-# ================= 5. BUTTON VIEWS & LOGIC SAM =================
+# ================= 5. BUTTON VIEWS & LOGIC SAM (TỰ ĐỘNG XÓA 5S) =================
 
 
 async def trigger_enemy_sam_attack(channel, coop: CoOpSession):
-  """Hàm kích hoạt tên lửa SAM tấn công ngẫu nhiên đếm ngược từ 3-8s."""
+  """Hàm kích hoạt tên lửa SAM tấn công ngẫu nhiên đếm ngược từ 3-8s và tự xóa tin nhắn sau 5s."""
   if coop.under_sam_attack or coop.hp <= 0:
     return
 
@@ -212,7 +210,8 @@ async def trigger_enemy_sam_attack(channel, coop: CoOpSession):
       ),
       color=discord.Color.red(),
   )
-  await channel.send(embed=warn_embed)
+  # Xóa thông báo SAM sau 5s
+  warn_msg = await channel.send(embed=warn_embed, delete_after=5)
 
   await asyncio.sleep(delay_time)
 
@@ -226,13 +225,13 @@ async def trigger_enemy_sam_attack(channel, coop: CoOpSession):
     hit_embed = discord.Embed(
         title="💥 TÊN LỬA SAM ĐÃ TRÚNG ĐÍCH!",
         description=(
-            f"❌ Quá thời gian né tránh! Trực thăng bị bắn trúng trúng tổn"
-            f" thất **-{dmg}% HP**.\n❤️ **HP Trực thăng còn lại:**"
-            f" **{coop.hp}%**"
+            f"❌ Quá thời gian né tránh! Trực thăng bị bắn trúng tổn thất"
+            f" **-{dmg}% HP**.\n❤️ **HP Trực thăng còn lại:** **{coop.hp}%**"
         ),
         color=discord.Color.dark_red(),
     )
-    await channel.send(embed=hit_embed)
+    # Xóa thông báo trúng đạn sau 5s
+    await channel.send(embed=hit_embed, delete_after=5)
 
 
 class CommanderCaroView(discord.ui.View):
@@ -303,7 +302,6 @@ class HeliPilotView(discord.ui.View):
     super().__init__(timeout=300)
     self.coop = coop
 
-    # Thêm nút Đổi góc nhìn nhanh nếu chơi Solo / Ka-50
     if coop.sub_mode == 1:
       switch_btn = discord.ui.Button(
           label="🔄 Đổi Góc Nhìn (Xạ Thủ)",
@@ -341,6 +339,7 @@ class HeliPilotView(discord.ui.View):
       return await interaction.response.send_message(
           f"🛡️ **NÉ THÀNH CÔNG!** Thao tác **{pos}** đã né trọn tên lửa SAM!",
           ephemeral=False,
+          delete_after=5,
       )
 
     self.coop.driver_pos = pos
@@ -365,6 +364,7 @@ class HeliPilotView(discord.ui.View):
           "🔥 **FLARE DEPLOYED!** Mồi bẫy nhiệt đã cản phá thành công tên lửa"
           " SAM!",
           ephemeral=False,
+          delete_after=5,
       )
     else:
       await interaction.response.send_message(
@@ -390,7 +390,6 @@ class HeliGunnerCommanderView(discord.ui.View):
     super().__init__(timeout=300)
     self.coop = coop
 
-    # Nút đổi góc nhìn nhanh cho Solo
     if coop.sub_mode == 1:
       switch_btn = discord.ui.Button(
           label="🔄 Đổi Góc Nhìn (Phi Công)",
@@ -438,7 +437,6 @@ class HeliGunnerCommanderView(discord.ui.View):
         "🎯 **RADAR LOCK-ON!** Đã khóa mục tiêu.", ephemeral=True
     )
 
-    # Tỷ lệ 50% kích hoạt tên lửa SAM địch bắn ngẫu nhiên 3-8s
     if random.random() < 0.5:
       asyncio.create_task(
           trigger_enemy_sam_attack(interaction.channel, self.coop)
@@ -491,9 +489,10 @@ class HeliGunnerCommanderView(discord.ui.View):
         if self.coop.enemy_hp <= 0
         else discord.Color.orange(),
     )
-    await interaction.followup.send(embed=embed)
 
-    # Tỷ lệ 60% khi khai hỏa bị SAM tấn công ngẫu nhiên 3-8s
+    # Đặt tự động xóa kết quả bắn sau 5s
+    await interaction.followup.send(embed=embed, delete_after=5)
+
     if random.random() < 0.6 and self.coop.enemy_hp > 0:
       asyncio.create_task(
           trigger_enemy_sam_attack(interaction.channel, self.coop)
@@ -544,7 +543,8 @@ class GunnerControlView(discord.ui.View):
         ),
         color=discord.Color.red(),
     )
-    await interaction.followup.send(embed=embed)
+    # Tự động xóa sau 5s
+    await interaction.followup.send(embed=embed, delete_after=5)
 
 
 class LoaderControlView(discord.ui.View):
