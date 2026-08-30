@@ -5,8 +5,6 @@ import threading
 import discord
 from discord.ext import commands
 from flask import Flask
-from google import genai
-from google.genai import types
 
 # ================= 1. WEB SERVER (FLASK) =================
 app = Flask(__name__)
@@ -28,11 +26,8 @@ def keep_alive():
   server_thread.start()
 
 
-# ================= 2. BOT & GEMINI CONFIG =================
+# ================= 2. BOT CONFIG =================
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN", "YOUR_DISCORD_BOT_TOKEN")
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "YOUR_GEMINI_API_KEY")
-
-ai_client = genai.Client(api_key=GEMINI_API_KEY)
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -41,17 +36,8 @@ bot = commands.Bot(command_prefix="!", intents=intents, help_command=None)
 coop_sessions = {}
 infantry_sessions = {}
 
-DAMAGE_CALCULATOR_PROMPT = (
-    "Bạn là hệ thống tính toán sát thương (Damage Engine) chiến trường hiện"
-    " đại. Dựa vào vũ khí, góc ngắm và trạng thái cơ động, hãy đưa ra sát"
-    " thương % chính xác và một dòng thông báo kỹ thuật quân sự sắc lạnh. Cấu"
-    " trúc trả lời bắt buộc: [SỐ_%_SÁT_THƯƠNG]|[THÔNG_BÁO_KỸ_THUẬT]. Ví dụ:"
-    " 40|Trúng nóc xe thiết giáp qua dẫn đường ATGM, phá hủy cấu trúc -40% HP."
-)
 
 # ================= 3. CO-OP SESSION CLASS =================
-
-
 class CoOpSession:
 
   def __init__(
@@ -105,8 +91,6 @@ class CoOpSession:
 
 
 # ================= 4. INFANTRY SESSION CLASS =================
-
-
 class InfantrySession:
 
   def __init__(self, player: discord.Member):
@@ -135,8 +119,6 @@ def generate_infantry_hud(session: InfantrySession) -> str:
 
 
 # ================= 5. ASCII MAP COMPACT =================
-
-
 def generate_role_ascii_map(coop: CoOpSession, role: str) -> str:
   unit = (
       coop.team.split("(")[-1].replace(")", "")
@@ -175,7 +157,7 @@ def generate_role_ascii_map(coop: CoOpSession, role: str) -> str:
     if role == "pilot":
       header = f"PILOT HUD | {coop.heli_model[:10]}"
       sam_txt = (
-          "🚨 SAM ĐANG BAY TỚI! 🚨"
+          "🚨 MỤC TIÊU BẮN TRẢ! 🚨"
           if coop.under_sam_attack
           else "   [ BẦU TRỜI AN TOÀN ]  "
       )
@@ -183,7 +165,7 @@ def generate_role_ascii_map(coop: CoOpSession, role: str) -> str:
           f"BAY: {coop.driver_pos[:18]}\n{sam_txt}\n ═════════════════════════"
       )
       bottom = (
-          f"SAM: {'🔴 BÁO ĐỘNG' if coop.under_sam_attack else '🟢 AN TOÀN'} |"
+          f"CẢNH BÁO: {'🔴 CÓ NGUY HIỂM' if coop.under_sam_attack else '🟢 AN TOÀN'} |"
           f" HP:{coop.hp}%"
       )
     else:
@@ -212,49 +194,68 @@ def generate_role_ascii_map(coop: CoOpSession, role: str) -> str:
 ```"""
 
 
-# ================= 6. LOGIC SAM & VIEWS =================
-
-
-async def trigger_enemy_sam_attack(channel, coop: CoOpSession):
-  if coop.under_sam_attack or coop.hp <= 0:
+# ================= 6. LOGIC ĐỊCH ĐÁNH TRẢ (AA / SAM) =================
+async def trigger_enemy_retaliation(channel, coop: CoOpSession):
+  if coop.hp <= 0 or coop.enemy_hp <= 0:
     return
 
-  coop.under_sam_attack = True
-  delay_time = random.randint(3, 8)
-  coop.sam_warning_msg = (
-      f"⚠️ CẢNH BÁO SAM: Tên lửa địch sẽ va chạm trong {delay_time} giây!"
-  )
+  # Tỷ lệ 50% dùng Súng phòng không (AA), 50% phóng Tên lửa SAM
+  attack_type = random.choice(["AA_GUN", "SAM_MISSILE"])
 
-  warn_embed = discord.Embed(
-      title="🚨 BÁO ĐỘNG TÊN LỬA PHÒNG KHÔNG (SAM) 🚨",
-      description=(
-          f"⚡ **Phát hiện tên lửa SAM đang khóa vào {coop.heli_model}!**\n"
-          f"⏱️ **Thời gian va chạm:** `{delay_time} giây`!\n"
-          "👉 **Phi công hãy thả Flare hoặc Lách né khẩn cấp ngay!**"
-      ),
-      color=discord.Color.red(),
-  )
-  await channel.send(embed=warn_embed, delete_after=5)
-
-  await asyncio.sleep(delay_time)
-
-  if coop.under_sam_attack and coop.hp > 0:
-    dmg = random.randint(30, 50)
+  if attack_type == "AA_GUN":
+    # Bắn phòng không ngầm phản công tức thì
+    dmg = random.randint(10, 25)
     coop.hp = max(0, coop.hp - dmg)
-    coop.under_sam_attack = False
-    coop.sam_warning_msg = "An toàn"
 
-    hit_embed = discord.Embed(
-        title="💥 TÊN LỬA SAM ĐÃ TRÚNG ĐÍCH!",
+    aa_embed = discord.Embed(
+        title="⚡ ĐỊCH BẮN TRẢ BẰNG SÚNG PHÒNG KHÔNG (AA)!",
         description=(
-            f"❌ Quá thời gian né tránh! Trực thăng bị bắn trúng tổn thất"
-            f" **-{dmg}% HP**.\n❤️ **HP Trực thăng còn lại:** **{coop.hp}%**"
+            f"🔫 Trận địa phòng không đối phương xả đạn phòng không 23mm/30mm!\n"
+            f"💥 **Tổn thất:** `-{dmg}% HP`\n"
+            f"❤️ **HP còn lại:** **{coop.hp}%**"
         ),
-        color=discord.Color.dark_red(),
+        color=discord.Color.dark_orange(),
     )
-    await channel.send(embed=hit_embed, delete_after=5)
+    await channel.send(embed=aa_embed, delete_after=6)
+
+  else:
+    # Phóng tên lửa SAM (cho phi công thời gian né/thả flare)
+    if coop.under_sam_attack:
+      return
+
+    coop.under_sam_attack = True
+    delay_time = random.randint(3, 6)
+
+    warn_embed = discord.Embed(
+        title="🚨 BÁO ĐỘNG TÊN LỬA PHÒNG KHÔNG (SAM) 🚨",
+        description=(
+            f"⚡ **Phát hiện tên lửa SAM đang khóa vào {coop.heli_model}!**\n"
+            f"⏱️ **Thời gian va chạm:** `{delay_time} giây`!\n"
+            "👉 **Phi công hãy thả Flare hoặc Lách né khẩn cấp ngay!**"
+        ),
+        color=discord.Color.red(),
+    )
+    await channel.send(embed=warn_embed, delete_after=5)
+
+    await asyncio.sleep(delay_time)
+
+    if coop.under_sam_attack and coop.hp > 0:
+      dmg = random.randint(30, 50)
+      coop.hp = max(0, coop.hp - dmg)
+      coop.under_sam_attack = False
+
+      hit_embed = discord.Embed(
+          title="💥 TÊN LỬA SAM ĐÃ TRÚNG ĐÍCH!",
+          description=(
+              f"❌ Quá thời gian né tránh! Tên lửa va chạm gây **-{dmg}% HP**.\n"
+              f"❤️ **HP còn lại:** **{coop.hp}%**"
+          ),
+          color=discord.Color.dark_red(),
+      )
+      await channel.send(embed=hit_embed, delete_after=5)
 
 
+# ================= 7. VIEWS CO-OP TRỰC THĂNG / TANK =================
 class CommanderCaroView(discord.ui.View):
 
   def __init__(self, coop: CoOpSession):
@@ -303,17 +304,25 @@ class DriverControlView(discord.ui.View):
   @discord.ui.button(
       label="⬆️ Tiến thẳng", style=discord.ButtonStyle.success, row=0
   )
-  async def ts(self, interaction: discord.Interaction, button: discord.ui.Button):
+  async def ts(
+      self, interaction: discord.Interaction, button: discord.ui.Button
+  ):
     await self.move(interaction, "Tiến thẳng")
 
   @discord.ui.button(
       label="↗️ Tiến phải", style=discord.ButtonStyle.success, row=0
   )
-  async def tr(self, interaction: discord.Interaction, button: discord.ui.Button):
+  async def tr(
+      self, interaction: discord.Interaction, button: discord.ui.Button
+  ):
     await self.move(interaction, "Tiến phải")
 
-  @discord.ui.button(label="⬇️ Lùi ẩn nấp", style=discord.ButtonStyle.danger, row=1)
-  async def bs(self, interaction: discord.Interaction, button: discord.ui.Button):
+  @discord.ui.button(
+      label="⬇️ Lùi ẩn nấp", style=discord.ButtonStyle.danger, row=1
+  )
+  async def bs(
+      self, interaction: discord.Interaction, button: discord.ui.Button
+  ):
     await self.move(interaction, "Lùi nấp")
 
 
@@ -348,7 +357,11 @@ class HeliPilotView(discord.ui.View):
     )
 
   async def move_heli(self, interaction: discord.Interaction, pos):
-    user_check = self.coop.solo_player if self.coop.sub_mode == 1 else self.coop.pilot
+    user_check = (
+        self.coop.solo_player
+        if self.coop.sub_mode == 1
+        else self.coop.pilot
+    )
     if interaction.user != user_check:
       return await interaction.response.send_message(
           "⚠️ Chỉ Phi công mới điều khiển bay!", ephemeral=True
@@ -356,7 +369,6 @@ class HeliPilotView(discord.ui.View):
 
     if self.coop.under_sam_attack and pos in ["Lách trái", "Lách phải"]:
       self.coop.under_sam_attack = False
-      self.coop.sam_warning_msg = "An toàn"
       return await interaction.response.send_message(
           f"🛡️ **NÉ THÀNH CÔNG!** Thao tác **{pos}** đã né trọn tên lửa SAM!",
           ephemeral=False,
@@ -371,8 +383,14 @@ class HeliPilotView(discord.ui.View):
   @discord.ui.button(
       label="🔥 THẢ FLARE", style=discord.ButtonStyle.success, row=1
   )
-  async def flare(self, interaction: discord.Interaction, button: discord.ui.Button):
-    user_check = self.coop.solo_player if self.coop.sub_mode == 1 else self.coop.pilot
+  async def flare(
+      self, interaction: discord.Interaction, button: discord.ui.Button
+  ):
+    user_check = (
+        self.coop.solo_player
+        if self.coop.sub_mode == 1
+        else self.coop.pilot
+    )
     if interaction.user != user_check:
       return await interaction.response.send_message(
           "⚠️ Chỉ Phi công mới thả Flare!", ephemeral=True
@@ -380,7 +398,6 @@ class HeliPilotView(discord.ui.View):
 
     if self.coop.under_sam_attack:
       self.coop.under_sam_attack = False
-      self.coop.sam_warning_msg = "An toàn"
       await interaction.response.send_message(
           "🔥 **FLARE DEPLOYED!** Mồi bẫy nhiệt đã cản phá thành công tên lửa"
           " SAM!",
@@ -395,13 +412,17 @@ class HeliPilotView(discord.ui.View):
   @discord.ui.button(
       label="⬅️ Lách trái", style=discord.ButtonStyle.secondary, row=2
   )
-  async def dodge_left(self, interaction: discord.Interaction, button: discord.ui.Button):
+  async def dodge_left(
+      self, interaction: discord.Interaction, button: discord.ui.Button
+  ):
     await self.move_heli(interaction, "Lách trái")
 
   @discord.ui.button(
       label="➡️ Lách phải", style=discord.ButtonStyle.secondary, row=2
   )
-  async def dodge_right(self, interaction: discord.Interaction, button: discord.ui.Button):
+  async def dodge_right(
+      self, interaction: discord.Interaction, button: discord.ui.Button
+  ):
     await self.move_heli(interaction, "Lách phải")
 
 
@@ -438,8 +459,14 @@ class HeliGunnerCommanderView(discord.ui.View):
   @discord.ui.button(
       label="📡 Quét Radar / Ngắm", style=discord.ButtonStyle.secondary, row=1
   )
-  async def scan_radar(self, interaction: discord.Interaction, button: discord.ui.Button):
-    user_check = self.coop.solo_player if self.coop.sub_mode == 1 else self.coop.gunner_cmd
+  async def scan_radar(
+      self, interaction: discord.Interaction, button: discord.ui.Button
+  ):
+    user_check = (
+        self.coop.solo_player
+        if self.coop.sub_mode == 1
+        else self.coop.gunner_cmd
+    )
     if interaction.user != user_check:
       return await interaction.response.send_message(
           "⚠️ Không có quyền!", ephemeral=True
@@ -449,8 +476,7 @@ class HeliGunnerCommanderView(discord.ui.View):
       self.coop.radar_locked = True
       self.coop.lock_target_info = "OPTICS LOCK"
       await interaction.response.send_message(
-          f"👁️ **[{self.coop.heli_model}]** Đã khóa mục tiêu bằng hệ thống"
-          " quang học / Laser!",
+          f"👁️ **[{self.coop.heli_model}]** Khóa quang học thành công!",
           ephemeral=True,
       )
     else:
@@ -462,82 +488,75 @@ class HeliGunnerCommanderView(discord.ui.View):
 
     if random.random() < 0.4:
       asyncio.create_task(
-          trigger_enemy_sam_attack(interaction.channel, self.coop)
+          trigger_enemy_retaliation(interaction.channel, self.coop)
       )
 
   @discord.ui.button(
       label="💥 KHAI HỎA ATGM", style=discord.ButtonStyle.danger, row=1
   )
-  async def fire_heli(self, interaction: discord.Interaction, button: discord.ui.Button):
-    user_check = self.coop.solo_player if self.coop.sub_mode == 1 else self.coop.gunner_cmd
+  async def fire_heli(
+      self, interaction: discord.Interaction, button: discord.ui.Button
+  ):
+    user_check = (
+        self.coop.solo_player
+        if self.coop.sub_mode == 1
+        else self.coop.gunner_cmd
+    )
     if interaction.user != user_check:
       return await interaction.response.send_message(
           "⚠️ Không có quyền!", ephemeral=True
       )
 
-    await interaction.response.defer(thinking=True)
-
-    damage_dealt = random.randint(30, 45)
-    tech_msg = "Phóng tên lửa ATGM trúng trực tiếp mục tiêu."
-
-    try:
-
-      async def call_gemini():
-        prompt = (
-            f"Vũ khí: {self.coop.current_ammo}. Bắn từ {self.coop.heli_model}."
-            f" Trạng thái lock: {self.coop.lock_target_info}."
-        )
-        return ai_client.models.generate_content(
-            model="gemini-2.5-flash",
-            contents=prompt,
-            config=types.GenerateContentConfig(
-                system_instruction=DAMAGE_CALCULATOR_PROMPT
-            ),
-        )
-
-      response = await asyncio.wait_for(call_gemini(), timeout=2.5)
-
-      if response and response.text:
-        parts = response.text.strip().split("|")
-        if len(parts) == 2:
-          damage_dealt = int("".join(filter(str.isdigit, parts[0])))
-          tech_msg = parts[1].strip()
-    except Exception:
-      pass
-
+    # Tính sát thương ngẫu nhiên 20% đến 40%
+    damage_dealt = random.randint(20, 40)
     self.coop.enemy_hp = max(0, self.coop.enemy_hp - damage_dealt)
+
+    msg_list = [
+        "Tên lửa ATGM xuyên giáp mục tiêu chính xác!",
+        "Khai hỏa tên lửa dẫn đường đánh trúng nóc xe địch!",
+        "ATGM va chạm trực tiếp gây sát thương nặng!",
+    ]
+    tech_msg = random.choice(msg_list)
 
     embed = discord.Embed(
         title=f"💥 KHAI HỎA ATGM ({self.coop.heli_model})",
         description=(
-            f"📝 *{tech_msg}*\n💥 **Sát thương:** `-{damage_dealt}% HP`\n🎯 **Địch"
-            f" còn:** **{self.coop.enemy_hp}% HP**"
+            f"📝 *{tech_msg}*\n"
+            f"💥 **Sát thương gây ra:** `-{damage_dealt}% HP`\n"
+            f"🎯 **HP Địch còn lại:** **{self.coop.enemy_hp}%**"
         ),
         color=discord.Color.red()
         if self.coop.enemy_hp <= 0
         else discord.Color.orange(),
     )
 
-    await interaction.followup.send(embed=embed, delete_after=5)
+    await interaction.response.send_message(embed=embed, delete_after=5)
 
+    # Tỷ lệ 60% Địch đánh trả bằng AA hoặc SAM
     if random.random() < 0.6 and self.coop.enemy_hp > 0:
       asyncio.create_task(
-          trigger_enemy_sam_attack(interaction.channel, self.coop)
+          trigger_enemy_retaliation(interaction.channel, self.coop)
       )
 
   @discord.ui.button(
       label="🔫 BẮN SÚNG MÁY (30mm)", style=discord.ButtonStyle.success, row=2
   )
-  async def fire_cannon(self, interaction: discord.Interaction, button: discord.ui.Button):
-    user_check = self.coop.solo_player if self.coop.sub_mode == 1 else self.coop.gunner_cmd
+  async def fire_cannon(
+      self, interaction: discord.Interaction, button: discord.ui.Button
+  ):
+    user_check = (
+        self.coop.solo_player
+        if self.coop.sub_mode == 1
+        else self.coop.gunner_cmd
+    )
     if interaction.user != user_check:
       return await interaction.response.send_message(
           "⚠️ Không có quyền!", ephemeral=True
       )
 
-    shot1 = random.randint(4, 8)
-    shot2 = random.randint(4, 8)
-    shot3 = random.randint(4, 8)
+    shot1 = random.randint(5, 12)
+    shot2 = random.randint(5, 12)
+    shot3 = random.randint(5, 12)
     total_dmg = shot1 + shot2 + shot3
 
     self.coop.enemy_hp = max(0, self.coop.enemy_hp - total_dmg)
@@ -550,7 +569,7 @@ class HeliGunnerCommanderView(discord.ui.View):
             f"• Viên 2: `-{shot2}% HP`\n"
             f"• Viên 3: `-{shot3}% HP`\n"
             f"⚡ **Tổng sát thương:** `-{total_dmg}% HP`\n"
-            f"🎯 **Địch còn:** **{self.coop.enemy_hp}% HP**"
+            f"🎯 **HP Địch còn lại:** **{self.coop.enemy_hp}%**"
         ),
         color=discord.Color.gold(),
     )
@@ -566,7 +585,9 @@ class GunnerControlView(discord.ui.View):
   @discord.ui.button(
       label="🔄 Xoay tháp (+1h)", style=discord.ButtonStyle.primary, row=0
   )
-  async def rotate(self, interaction: discord.Interaction, button: discord.ui.Button):
+  async def rotate(
+      self, interaction: discord.Interaction, button: discord.ui.Button
+  ):
     if interaction.user != self.coop.gunner:
       return await interaction.response.send_message(
           "⚠️ Chỉ Pháo thủ!", ephemeral=True
@@ -579,7 +600,9 @@ class GunnerControlView(discord.ui.View):
   @discord.ui.button(
       label="💥 KHAI HỎA TANK", style=discord.ButtonStyle.danger, row=1
   )
-  async def fire(self, interaction: discord.Interaction, button: discord.ui.Button):
+  async def fire(
+      self, interaction: discord.Interaction, button: discord.ui.Button
+  ):
     if interaction.user != self.coop.gunner:
       return await interaction.response.send_message(
           "⚠️ Chỉ Pháo thủ!", ephemeral=True
@@ -589,19 +612,20 @@ class GunnerControlView(discord.ui.View):
           f"⏳ Đang nạp ({self.coop.loader_cooldown}s)!", ephemeral=True
       )
 
-    await interaction.response.defer(thinking=True)
-    damage_dealt = random.randint(25, 40)
-
+    # Tính sát thương ngẫu nhiên 20% đến 40%
+    damage_dealt = random.randint(20, 40)
     self.coop.enemy_hp = max(0, self.coop.enemy_hp - damage_dealt)
+
     embed = discord.Embed(
         title="💥 TANK KHAI HỎA",
         description=(
-            f"📦 Đạn: `{self.coop.current_ammo}`\n💥 Sát thương:"
-            f" `-{damage_dealt}%`\n🎯 Địch còn: **{self.coop.enemy_hp}% HP**"
+            f"📦 Loại đạn: `{self.coop.current_ammo}`\n"
+            f"💥 **Sát thương:** `-{damage_dealt}% HP`\n"
+            f"🎯 **HP Địch còn:** **{self.coop.enemy_hp}%**"
         ),
         color=discord.Color.red(),
     )
-    await interaction.followup.send(embed=embed, delete_after=5)
+    await interaction.response.send_message(embed=embed, delete_after=5)
 
 
 class LoaderControlView(discord.ui.View):
@@ -632,15 +656,19 @@ class LoaderControlView(discord.ui.View):
     asyncio.create_task(cd())
 
   @discord.ui.button(label="📦 APFSDS", style=discord.ButtonStyle.primary)
-  async def a1(self, interaction: discord.Interaction, button: discord.ui.Button):
+  async def a1(
+      self, interaction: discord.Interaction, button: discord.ui.Button
+  ):
     await self.ammo(interaction, "APFSDS")
 
   @discord.ui.button(label="🔥 HEAT", style=discord.ButtonStyle.danger)
-  async def a2(self, interaction: discord.Interaction, button: discord.ui.Button):
+  async def a2(
+      self, interaction: discord.Interaction, button: discord.ui.Button
+  ):
     await self.ammo(interaction, "HEAT")
 
 
-# ================= VIEW BỘ BINH (LOST FRONT / DOOM) =================
+# ================= 8. VIEW BỘ BINH CÓ ĐỊCH BẮN TRẢ =================
 class InfantryControlView(discord.ui.View):
 
   def __init__(self, session: InfantrySession):
@@ -655,22 +683,26 @@ class InfantryControlView(discord.ui.View):
       return False
     return True
 
+  # Hàm xử lý kẻ địch bộ binh bắn trả
   async def enemy_retaliate(self, channel):
     if self.session.enemy_hp <= 0 or self.session.hp <= 0:
       return
 
-    if random.random() < 0.5:
+    # Tỷ lệ 60% Địch bộ binh phản công
+    if random.random() < 0.6:
       base_dmg = random.randint(15, 30)
+
+      # Giảm 70% sát thương nếu đang núp công sự
       if self.session.in_cover:
-        base_dmg = int(base_dmg * 0.3)
+        base_dmg = max(3, int(base_dmg * 0.3))
 
       self.session.hp = max(0, self.session.hp - base_dmg)
       embed = discord.Embed(
-          title="🔥 ĐỊCH PHẢN CÔNG!",
+          title="🔥 ĐỊCH BỘ BINH XẢ SÚNG BẮN TRẢ!",
           description=(
-              f"💥 Địch xả súng đáp trả! Bạn mất **-{base_dmg}% HP**"
-              f" {'(Đã giảm nhờ núp công sự)' if self.session.in_cover else ''}.\n❤️"
-              f" **HP còn lại:** `{self.session.hp}%`"
+              f"💥 Kẻ địch nổ súng đáp trả gây **-{base_dmg}% HP** sát thương"
+              f" {'(Đã giảm nhờ núp công sự)' if self.session.in_cover else ''}!\n"
+              f"❤️ **HP Lính còn lại:** `{self.session.hp}%`"
           ),
           color=discord.Color.dark_red(),
       )
@@ -679,24 +711,26 @@ class InfantryControlView(discord.ui.View):
   @discord.ui.button(
       label="🔫 Bắn Rifle", style=discord.ButtonStyle.primary, row=0
   )
-  async def fire_rifle(self, interaction: discord.Interaction, button: discord.ui.Button):
+  async def fire_rifle(
+      self, interaction: discord.Interaction, button: discord.ui.Button
+  ):
     if not await self.check_user(interaction):
       return
     if self.session.rifle_ammo < 5:
       return await interaction.response.send_message(
-          "⚠️ Hết đạn Rifle! Hãy nạp đạn.", ephemeral=True
+          "⚠️ Hết đạn Rifle! Hãy bấm Thay Đạn.", ephemeral=True
       )
 
     self.session.rifle_ammo -= 5
     self.session.in_cover = False
-    dmg = random.randint(12, 22)
+    dmg = random.randint(20, 35)
     self.session.enemy_hp = max(0, self.session.enemy_hp - dmg)
 
     embed = discord.Embed(
         title="🔫 XẢ SÚNG TRƯỜNG (RIFLE)",
         description=(
-            f"💥 Xả 5 viên đạn! Gây **-{dmg}% HP** sát thương.\n🎯 HP Địch"
-            f" còn: `{self.session.enemy_hp}%`"
+            f"💥 Xả loạt đạn Rifle! Gây **-{dmg}% HP** sát thương.\n"
+            f"🎯 **HP Địch còn:** `{self.session.enemy_hp}%`"
         ),
         color=discord.Color.blue(),
     )
@@ -706,7 +740,9 @@ class InfantryControlView(discord.ui.View):
   @discord.ui.button(
       label="💥 Super Shotgun", style=discord.ButtonStyle.danger, row=0
   )
-  async def fire_shotgun(self, interaction: discord.Interaction, button: discord.ui.Button):
+  async def fire_shotgun(
+      self, interaction: discord.Interaction, button: discord.ui.Button
+  ):
     if not await self.check_user(interaction):
       return
     if self.session.shotgun_ammo < 2:
@@ -716,14 +752,14 @@ class InfantryControlView(discord.ui.View):
 
     self.session.shotgun_ammo -= 2
     self.session.in_cover = False
-    dmg = random.randint(28, 45)
+    dmg = random.randint(25, 40)
     self.session.enemy_hp = max(0, self.session.enemy_hp - dmg)
 
     embed = discord.Embed(
         title="💥 SUPER SHOTGUN KHAI HỎA!",
         description=(
-            f"🔥 **BOOM!** Phát bắn đạn chùm áp sát gây **-{dmg}% HP** sát"
-            f" thương!\n🎯 HP Địch còn: `{self.session.enemy_hp}%`"
+            f"🔥 Bắn shotgun áp sát gây **-{dmg}% HP** sát thương!\n"
+            f"🎯 **HP Địch còn:** `{self.session.enemy_hp}%`"
         ),
         color=discord.Color.red(),
     )
@@ -733,7 +769,9 @@ class InfantryControlView(discord.ui.View):
   @discord.ui.button(
       label="🚀 Bắn Rocket (RPG)", style=discord.ButtonStyle.secondary, row=0
   )
-  async def fire_rocket(self, interaction: discord.Interaction, button: discord.ui.Button):
+  async def fire_rocket(
+      self, interaction: discord.Interaction, button: discord.ui.Button
+  ):
     if not await self.check_user(interaction):
       return
     if self.session.rocket_ammo < 1:
@@ -743,14 +781,14 @@ class InfantryControlView(discord.ui.View):
 
     self.session.rocket_ammo -= 1
     self.session.in_cover = False
-    dmg = random.randint(50, 70)
+    dmg = random.randint(30, 40)
     self.session.enemy_hp = max(0, self.session.enemy_hp - dmg)
 
     embed = discord.Embed(
         title="🚀 ROCKET LAUNCHER",
         description=(
-            f"🚀 Tên lửa nổ tung mục tiêu! Gây **-{dmg}% HP**!\n🎯 HP Địch"
-            f" còn: `{self.session.enemy_hp}%`"
+            f"🚀 Bắn Rocket nổ tung vị trí địch! Gây **-{dmg}% HP**!\n"
+            f"🎯 **HP Địch còn:** `{self.session.enemy_hp}%`"
         ),
         color=discord.Color.dark_gold(),
     )
@@ -760,32 +798,34 @@ class InfantryControlView(discord.ui.View):
   @discord.ui.button(
       label="🛡️ Núp Công Sự", style=discord.ButtonStyle.success, row=1
   )
-  async def take_cover(self, interaction: discord.Interaction, button: discord.ui.Button):
+  async def take_cover(
+      self, interaction: discord.Interaction, button: discord.ui.Button
+  ):
     if not await self.check_user(interaction):
       return
     self.session.in_cover = True
     await interaction.response.send_message(
-        "🛡️ Bạn đã di chuyển vào công sự! (Giảm 70% sát thương từ đạn địch)",
+        "🛡️ Bạn đã núp sau công sự! (Giảm 70% sát thương khi địch bắn trả)",
         ephemeral=True,
     )
 
   @discord.ui.button(
       label="🔄 Thay Đạn", style=discord.ButtonStyle.secondary, row=1
   )
-  async def reload(self, interaction: discord.Interaction, button: discord.ui.Button):
+  async def reload(
+      self, interaction: discord.Interaction, button: discord.ui.Button
+  ):
     if not await self.check_user(interaction):
       return
     self.session.rifle_ammo = 30
     self.session.shotgun_ammo = 8
     self.session.rocket_ammo = 2
     await interaction.response.send_message(
-        "🔄 Đã nạp đầy toàn bộ băng đạn!", ephemeral=True
+        "🔄 Đã nạp đầy lại toàn bộ băng đạn!", ephemeral=True
     )
 
 
-# ================= 7. LỆNH BOT =================
-
-
+# ================= 9. LỆNH BOT =================
 @bot.command(name="Chelps")
 async def chelps_cmd(ctx):
   embed = discord.Embed(
@@ -847,8 +887,9 @@ async def infantry_cmd(ctx):
   embed = discord.Embed(
       title="🪖 BẮT ĐẦU CHẾ ĐỘ BỘ BINH (SINGLE PLAYER)",
       description=(
-          f"Lính chiến {ctx.author.mention} đã xuất kích!\nSử dụng các nút bấm"
-          " bên dưới để di chuyển, núp và tiêu diệt Boss địch.\n\n"
+          f"Lính chiến {ctx.author.mention} đã xuất kích!\n"
+          "Dùng các nút bấm bên dưới để chiến đấu, núp công sự và tiêu diệt"
+          " địch.\n\n"
           + generate_infantry_hud(session)
       ),
       color=discord.Color.dark_green(),
