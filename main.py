@@ -1,506 +1,523 @@
-import io
 import os
 import random
-import sqlite3
+import time
 import discord
-from discord.ext import commands, tasks
-from PIL import Image, ImageDraw, ImageFont
-import google.generativeai as genai
+from discord.ext import commands
 
-DISCORD_TOKEN = os.getenv("DISCORD_TOKEN", "YOUR_DISCORD_BOT_TOKEN")
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "YOUR_GEMINI_API_KEY")
-
-if GEMINI_API_KEY != "YOUR_GEMINI_API_KEY":
-    genai.configure(api_key=GEMINI_API_KEY)
-    gemini_model = genai.GenerativeModel("gemini-1.5-flash")
-else:
-    gemini_model = None
-
+# --------------------------------------------------
+# 1. KHỞI TẠO BOT & CƠ SỞ DỮ LIỆU
+# --------------------------------------------------
 intents = discord.Intents.default()
 intents.message_content = True
+
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-GRID_ROWS = 4
-GRID_COLS = ["A", "B", "C", "D"]
+# Database lưu dữ liệu người chơi
+player_data = {}
 
-def init_db():
-    conn = sqlite3.connect("game.db")
-    cursor = conn.cursor()
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS players (
-            user_id INTEGER PRIMARY KEY,
-            money REAL DEFAULT 1000.0,
-            debt REAL DEFAULT 500000.0,
-            ore INTEGER DEFAULT 0,
-            steel INTEGER DEFAULT 0,
-            weapon_power INTEGER DEFAULT 0,
-            defense_power INTEGER DEFAULT 0,
-            territory_level INTEGER DEFAULT 1,
-            tech_level INTEGER DEFAULT 1,
-            last_transfer_date TEXT DEFAULT '',
-            daily_transferred REAL DEFAULT 0.0
-        )
-    """)
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS grid_cells (
-            user_id INTEGER,
-            cell_id TEXT,
-            building_type TEXT DEFAULT 'trong',
-            connected_to TEXT DEFAULT '',
-            PRIMARY KEY (user_id, cell_id)
-        )
-    """)
-    # Bảng lưu trữ danh mục bất động sản đầu tư của người chơi
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS real_estate (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER,
-            property_name TEXT,
-            purchase_price REAL,
-            current_value REAL,
-            risk_tier TEXT
-        )
-    """)
-    conn.commit()
-    conn.close()
-
-init_db()
 
 def get_player(user_id):
-    conn = sqlite3.connect("game.db")
-    cursor = conn.cursor()
-    cursor.execute("""
-        SELECT money, debt, ore, steel, weapon_power, defense_power, territory_level, tech_level, daily_transferred 
-        FROM players WHERE user_id = ?
-    """, (user_id,))
-    row = cursor.fetchone()
-    if not row:
-        cursor.execute("""
-            INSERT INTO players (user_id, money, debt, ore, steel, weapon_power, defense_power, territory_level, tech_level) 
-            VALUES (?, 1000.0, 500000.0, 0, 0, 0, 0, 1, 1)
-        """, (user_id,))
-        for r in range(1, GRID_ROWS + 1):
-            for c in GRID_COLS:
-                cursor.execute("INSERT OR IGNORE INTO grid_cells (user_id, cell_id, building_type, connected_to) VALUES (?, ?, 'trong', '')", (user_id, f"{c}{r}"))
-        conn.commit()
-        row = (1000.0, 500000.0, 0, 0, 0, 0, 1, 1, 0.0)
-    conn.close()
-    return {
-        "money": row[0], "debt": row[1], "ore": row[2], "steel": row[3], 
-        "weapon": row[4], "defense": row[5], "territory": row[6], "tech": row[7], "daily_transferred": row[8]
+  if user_id not in player_data:
+    player_data[user_id] = {
+        "step": 1,
+        "balance": 5000,
+        "lands": [],  # Công nghiệp dân sự: nhamay, trangtrai
+        "military_factories": 0,  # Nhà máy quốc phòng
+        "tech_level": 1,  # Cấp độ công nghệ quân sự
+        "military": {"tank": 0, "plane": 0, "missile": 0, "ammo": 50},
+        "territories": 1,  # Số vùng đất/lãnh thổ đang cai trị
+        "inventory": {"grapnel": 1, "batarang": 3, "sat": 10, "nongsan": 10},
+        "last_raid": 0,
+        "last_conquer": 0,
     }
+  return player_data[user_id]
 
-def update_player(user_id, data):
-    conn = sqlite3.connect("game.db")
-    cursor = conn.cursor()
-    cursor.execute("""
-        UPDATE players 
-        SET money = ?, debt = ?, ore = ?, steel = ?, weapon_power = ?, defense_power = ?, territory_level = ?, tech_level = ?, daily_transferred = ? 
-        WHERE user_id = ?
-    """, (data['money'], data['debt'], data['ore'], data['steel'], data['weapon'], data['defense'], data['territory'], data['tech'], data['daily_transferred'], user_id))
-    conn.commit()
-    conn.close()
 
-def get_grid(user_id):
-    conn = sqlite3.connect("game.db")
-    cursor = conn.cursor()
-    cursor.execute("SELECT cell_id, building_type, connected_to FROM grid_cells WHERE user_id = ?", (user_id,))
-    rows = cursor.fetchall()
-    conn.close()
-    return {row[0]: {"type": row[1], "target": row[2]} for row in rows}
+# --------------------------------------------------
+# 2. HÀM DÒ FILE ẢNH ALFRED
+# --------------------------------------------------
+def get_alfred_image():
+  possible_filenames = [
+      "alfred.png",
+      "Alfred.png",
+      "alfred.jpg",
+      "Alfred.jpg",
+      "ALFRED.PNG",
+      "ALFRED.JPG",
+  ]
+  for name in possible_filenames:
+    if os.path.exists(name):
+      return name
+  return None
 
-def create_vn_image(background_color, speaker_name, dialogue_text):
-    width, height = 800, 450
-    img = Image.new("RGB", (width, height), color=background_color)
-    draw = ImageDraw.Draw(img)
-    draw.rectangle([40, 300, 760, 420], fill=(15, 15, 25), outline=(200, 200, 200), width=2)
-    draw.rectangle([50, 270, 250, 305], fill=(40, 40, 70), outline=(200, 200, 200), width=1)
-    
-    try:
-        font_name = ImageFont.truetype("arial.ttf", 16)
-        font_text = ImageFont.truetype("arial.ttf", 15)
-    except IOError:
-        font_name = ImageFont.load_default()
-        font_text = ImageFont.load_default()
 
-    draw.text((65, 278), speaker_name, fill=(255, 220, 100), font=font_name)
-    lines, current_line = [], ""
-    for word in dialogue_text.split(" "):
-        if len(current_line + " " + word) <= 65:
-            current_line += (" " if current_line else "") + word
-        else:
-            lines.append(current_line)
-            current_line = word
-    if current_line: lines.append(current_line)
-        
-    text_y = 320
-    for line in lines[:4]:
-        draw.text((60, text_y), line, fill=(255, 255, 255), font=font_text)
-        text_y += 22
+# --------------------------------------------------
+# 3. GIAO DIỆN NÚT BẤM (BUTTON VIEWS)
+# --------------------------------------------------
+class GameStoryView(discord.ui.View):
 
-    bio = io.BytesIO()
-    img.save(bio, "PNG")
-    bio.seek(0)
-    return discord.File(bio, filename="visual_novel.png")
+  def __init__(self):
+    super().__init__(timeout=None)
 
-async def get_butler_dialogue(prompt_context):
-    if not gemini_model: return "Thưa cậu chủ, tôi luôn sẵn sàng."
-    try:
-        res = gemini_model.generate_content(f"Bạn là quản gia thực dụng, sắc sảo, hay cà khịa cậu chủ phá sản đang trả nợ 500k$. Trả lời dưới 2 câu bằng tiếng Việt.\nTình huống: {prompt_context}")
-        return res.text.strip()
-    except: return "Thưa cậu chủ, hệ thống liên lạc đang chập chờn."
+  @discord.ui.button(
+      label="Tiếp", style=discord.ButtonStyle.primary, emoji="➡️"
+  )
+  async def next_button_callback(
+      self, interaction: discord.Interaction, button: discord.ui.Button
+  ):
+    p = get_player(interaction.user.id)
+    p["step"] += 1
 
-@tasks.loop(seconds=30)
-async def factory_production_loop():
-    conn = sqlite3.connect("game.db")
-    cursor = conn.cursor()
-    cursor.execute("SELECT user_id FROM players")
-    for u in cursor.fetchall():
-        user_id = u[0]
-        grid = get_grid(user_id)
-        player = get_player(user_id)
-        
-        miners = sum(1 for c in grid.values() if c["type"] == "miner")
-        smelters = sum(1 for c in grid.values() if c["type"] == "smelter" and c["target"] in grid and grid[c["target"]]["type"] == "miner")
-        
-        multiplier = player['tech']
-        added_ore = miners * 4 * multiplier
-        consumed_ore = smelters * 3
-        actual_smelted = min(added_ore, consumed_ore) if smelters > 0 else 0
-        added_steel = int(actual_smelted * 0.8 * multiplier)
+    if p["step"] == 2:
+      new_dialogue = (
+          "Chiến tranh toàn cầu đã nổ ra! Ngài cần xây dựng Nhà máy Quốc phòng"
+          " (`!buildmil`) và nghiên cứu công nghệ (`!research`)."
+      )
+    elif p["step"] == 3:
+      new_dialogue = (
+          "Hãy sản xuất Xe tăng, Máy bay (`!produce`) và tiến hành chinh phục"
+          " các lãnh thổ mới (`!conquer`) ngay hôm nay!"
+      )
+    else:
+      new_dialogue = (
+          f"Ngài đang ở giai đoạn kịch bản thứ {p['step']}.\nHãy gõ `!help` để"
+          " xem lại toàn bộ hệ thống lệnh quân sự."
+      )
 
-        cursor.execute("SELECT ore, steel FROM players WHERE user_id = ?", (user_id,))
-        p = cursor.fetchone()
-        cursor.execute("UPDATE players SET ore = ?, steel = ? WHERE user_id = ?", (max(0, p[0] + added_ore - consumed_ore), p[1] + added_steel, user_id))
-    conn.commit()
-    conn.close()
+    embed = interaction.message.embeds[0]
+    embed.description = new_dialogue
+    await interaction.response.edit_message(embed=embed, view=self)
 
-@bot.event
-async def on_ready():
-    factory_production_loop.start()
-    print(f"Bot Tycoon RealEstate Edition Online: {bot.user}")
 
-@bot.command(name="start_empire")
-async def start_game(ctx):
-    player = get_player(ctx.author.id)
-    diag = await get_butler_dialogue("Cậu chủ nhìn mảnh đất hoang.")
-    embed = discord.Embed(title="🏛️ ĐẾ CHẾ CÔNG NGHIỆP: KHỞI ĐẦU", description=f"*{diag}*\n\n💵 Tiền: `${player['money']:,.2f}` | 💳 Nợ: `${player['debt']:,.2f}`", color=discord.Color.dark_red())
-    await ctx.send(embed=embed)
+class TradeView(discord.ui.View):
 
-@bot.command(name="factory")
-async def show_factory(ctx):
-    player = get_player(ctx.author.id)
-    grid = get_grid(user_id=ctx.author.id)
-    board = "```\n" + "      " + "   ".join(GRID_COLS) + "  \n    +----+----+----+----+\n"
-    for r in range(1, GRID_ROWS + 1):
-        line = f"  {r} |"
-        for c in GRID_COLS:
-            t = grid.get(f"{c}{r}", {}).get("type", "trong")
-            sym = " ⛏️ " if t=="miner" else " 🏭 " if t=="smelter" else " 🚚 " if t=="truck" else "    "
-            line += sym + "|"
-        board += line + "\n    +----+----+----+----+\n"
-    board += "```"
-    embed = discord.Embed(title="🗺️ BẢN ĐỒ NHÀ MÁY & LOGISTICS", color=discord.Color.dark_green())
-    embed.add_field(name="Trạng Thái", value=f"💵 Tiền: `${player['money']:,.2f}` | 📦 Quặng: {player['ore']} | 🔩 Thép: {player['steel']}\n🔬 Công nghệ: Cấp {player['tech']} | ⚔️ Sức mạnh: {player['weapon'] + player['defense']}", inline=False)
-    embed.add_field(name="Sơ Đồ (⛏️ Mỏ | 🏭 Lò | 🚚 Xe chở)", value=board, inline=False)
-    embed.set_footer(text="Lệnh: !f_place [miner/smelter/truck] [ô] | !f_connect [đích] [nguồn]")
-    await ctx.send(embed=embed)
+  def __init__(self, sender, target, item, amount, price):
+    super().__init__(timeout=60)
+    self.sender = sender
+    self.target = target
+    self.item = item
+    self.amount = amount
+    self.price = price
 
-@bot.command(name="f_place")
-async def f_place(ctx, b_type: str, cell: str):
-    b_type = b_type.lower()
-    cell = cell.upper()
-    if b_type not in ["miner", "smelter", "truck"]:
-        return await ctx.send("❌ Thiết bị không hợp lệ! Dùng: `miner`, `smelter`, hoặc `truck`.")
-    
-    costs = {"miner": 300, "smelter": 600, "truck": 500}
-    player = get_player(ctx.author.id)
-    cost = costs[b_type]
-    
-    if player['money'] < cost:
-        return await ctx.send(f"❌ Không đủ tiền! Cần `${cost}`.")
-        
-    player['money'] -= cost
-    update_player(ctx.author.id, player)
+  @discord.ui.button(
+      label="Xác nhận giao dịch", style=discord.ButtonStyle.success, emoji="✅"
+  )
+  async def accept(
+      self, interaction: discord.Interaction, button: discord.ui.Button
+  ):
+    if interaction.user.id != self.target.id:
+      return await interaction.response.send_message(
+          "Đây không phải lời mời cho bạn!", ephemeral=True
+      )
 
-    conn = sqlite3.connect("game.db")
-    cursor = conn.cursor()
-    cursor.execute("UPDATE grid_cells SET building_type = ? WHERE user_id = ? AND cell_id = ?", (b_type, ctx.author.id, cell))
-    conn.commit()
-    conn.close()
-    await ctx.send(f"✅ Đã đặt `{b_type}` tại ô **{cell}** với giá `${cost}`!")
+    p_sender = get_player(self.sender.id)
+    p_target = get_player(self.target.id)
 
-@bot.command(name="f_remove")
-async def f_remove(ctx, cell: str):
-    cell = cell.upper()
-    conn = sqlite3.connect("game.db")
-    cursor = conn.cursor()
-    cursor.execute("UPDATE grid_cells SET building_type = 'trong', connected_to = '' WHERE user_id = ? AND cell_id = ?", (ctx.author.id, cell))
-    conn.commit()
-    conn.close()
-    await ctx.send(f"🗑️ Đã thu hồi thiết bị tại ô **{cell}**!")
+    if p_sender["inventory"].get(self.item, 0) < self.amount:
+      return await interaction.response.send_message(
+          "Người bán không còn đủ hàng!", ephemeral=True
+      )
+    if p_target["balance"] < self.price:
+      return await interaction.response.send_message(
+          "Bạn không đủ tiền!", ephemeral=True
+      )
 
-@bot.command(name="f_connect")
-async def f_connect(ctx, target: str, source: str):
-    conn = sqlite3.connect("game.db")
-    cursor = conn.cursor()
-    cursor.execute("UPDATE grid_cells SET connected_to = ? WHERE user_id = ? AND cell_id = ?", (source.upper(), ctx.author.id, target.upper()))
-    conn.commit()
-    conn.close()
-    await ctx.send(f"🔌 Đã nối dây dữ liệu từ **{source.upper()}** sang **{target.upper()}**!")
-
-@bot.command(name="f_sell")
-async def f_sell(ctx, res: str):
-    user_id = ctx.author.id
-    player = get_player(user_id)
-    grid = get_grid(user_id)
-    res = res.lower()
-
-    has_connected_truck = False
-    for cell_id, data in grid.items():
-        if data["type"] == "truck" and data["target"] in grid:
-            has_connected_truck = True
-            break
-
-    if not has_connected_truck:
-        return await ctx.send("❌ Không thể bán hàng! Bạn phải đặt một **Xe chở (truck)** trên lưới và dùng `!f_connect` nối nguồn tài nguyên vào xe chở đó.")
-
-    earned = 0
-    if res in ["quang", "ore"] and player['ore'] > 0:
-        earned, player['ore'] = player['ore'] * 10 * player['tech'], 0
-    elif res in ["thep", "steel"] and player['steel'] > 0:
-        earned, player['steel'] = player['steel'] * 35 * player['tech'], 0
-    else: 
-        return await ctx.send("❌ Kho trống hoặc tài nguyên không hợp lệ (`ore`/`steel`)!")
-
-    player['money'] += earned
-    update_player(user_id, player)
-    await ctx.send(f"🚚 Xe chở đã vận chuyển thành công! Thu về **${earned:,.2f}** tiền mặt!")
-
-# --- HỆ THỐNG ĐẦU TƯ BẤT ĐỘNG SẢN MỚI ---
-@bot.command(name="real_estate", aliases=["bds"])
-async def real_estate_market(ctx):
-    embed = discord.Embed(title="🏢 SÀN GIAO DỊCH BẤT ĐỘNG SẢN & ĐẦU TƯ", color=discord.Color.orange())
-    embed.description = (
-        "Gặp gỡ danh nhân bất động sản để mua các dự án đất đai chiến lược. "
-        "Giá trị bất động sản sẽ biến động ngẫu nhiên hoặc dựa trên tổng tài sản & số ô đất bạn đang sở hữu!\n\n"
-        "🏠 **1. Khu đất vùng ven thành phố**\n"
-        "   - Giá khởi điểm: `$2,000` | Rủi ro: Thấp | Lợi nhuận ổn định\n"
-        "   - Lệnh mua: `!buy_property ven`\n\n"
-        "🏗️ **2. Tổ hợp thương mại trung tâm**\n"
-        "   - Giá khởi điểm: `$8,000` | Rủi ro: Trung bình | Lợi nhuận cao\n"
-        "   - Lệnh mua: `!buy_property trungtam`\n\n"
-        "🌆 **3. Siêu dự án khu đô thị mới**\n"
-        "   - Giá khởi điểm: `$25,000` | Rủi ro: Cao | Siêu lợi nhuận\n"
-        "   - Lệnh mua: `!buy_property do-thi`\n\n"
-        "📋 Xem danh mục đang sở hữu: `!my_properties` | Bán lại: `!sell_property [ID]`"
+    p_sender["inventory"][self.item] -= self.amount
+    p_target["inventory"][self.item] = (
+        p_target["inventory"].get(self.item, 0) + self.amount
     )
-    await ctx.send(embed=embed)
+    p_target["balance"] -= self.price
+    p_sender["balance"] += self.price
 
-@bot.command(name="buy_property")
-async def buy_property(ctx, prop_type: str):
-    user_id = ctx.author.id
-    player = get_player(user_id)
-    prop_type = prop_type.lower()
-    
-    props_info = {
-        "ven": ("Đất vùng ven thành phố", 2000, "Thấp"),
-        "trungtam": ("Tổ hợp thương mại trung tâm", 8000, "Trung bình"),
-        "do-thi": ("Siêu dự án khu đô thị mới", 25000, "Cao")
-    }
-    
-    if prop_type not in props_info:
-        return await ctx.send("❌ Loại bất động sản không hợp lệ! Chọn: `ven`, `trungtam`, hoặc `do-thi`.")
-        
-    name, price, risk = props_info[prop_type]
-    if player['money'] < price:
-        return await ctx.send(f"❌ Không đủ tiền mua bất động sản này! Cần `${price:,.2f}`.")
-        
-    player['money'] -= price
-    update_player(user_id, player)
-    
-    conn = sqlite3.connect("game.db")
-    cursor = conn.cursor()
-    cursor.execute("""
-        INSERT INTO real_estate (user_id, property_name, purchase_price, current_value, risk_tier)
-        VALUES (?, ?, ?, ?, ?)
-    """, (user_id, name, price, price, risk))
-    conn.commit()
-    conn.close()
-    
-    file = create_vn_image((45, 35, 25), "Đại gia BĐS Arthur", f"Chúc mừng cậu chủ đã sở hữu thành công {name}! Hy vọng thị trường sẽ mỉm cười với khoản đầu tư này.")
-    await ctx.send(file=file)
-
-@bot.command(name="my_properties", aliases=["ds_bds"])
-async def my_properties(ctx):
-    user_id = ctx.author.id
-    conn = sqlite3.connect("game.db")
-    cursor = conn.cursor()
-    cursor.execute("SELECT id, property_name, purchase_price, current_value, risk_tier FROM real_estate WHERE user_id = ?", (user_id,))
-    rows = cursor.fetchall()
-    conn.close()
-    
-    if not rows:
-        return await ctx.send("📁 Bạn chưa sở hữu dự án bất động sản nào! Dùng lệnh `!real_estate` để tham khảo.")
-        
-    embed = discord.Embed(title="📋 DANH MỤC ĐẦU TƯ BẤT ĐỘNG SẢN", color=discord.Color.gold())
-    total_val = 0
-    for row in rows:
-        prop_id, name, p_price, c_val, risk = row
-        # Cập nhật biến động giá ngẫu nhiên mỗi lần xem danh mục kết hợp với tổng tài sản & số ô đất sở hữu
-        player = get_player(user_id)
-        # Hệ số tăng trưởng dựa trên ngẫu nhiên (-10% đến +25%) + thưởng từ cấp lãnh thổ và tài sản
-        factor = random.uniform(0.90, 1.25) + (player['territory'] * 0.02)
-        new_val = round(c_val * factor, 2)
-        
-        # Cập nhật giá trị mới vào db
-        conn = sqlite3.connect("game.db")
-        cur = conn.cursor()
-        cur.execute("UPDATE real_estate SET current_value = ? WHERE id = ?", (new_val, prop_id))
-        conn.commit()
-        conn.close()
-        
-        profit_loss = new_val - p_price
-        color_icon = "📈" if profit_loss >= 0 else "📉"
-        embed.add_field(
-            name=f"ID [{prop_id}] - {name}",
-            value=f"🏷️ Vốn mua: `${p_price:,.2f}`\n💎 Giá hiện tại: `${new_val:,.2f}` ({color_icon} `${profit_loss:+,.2f}`)\n⚡ Rủi ro: {risk}",
-            inline=False
-        )
-        total_val += new_val
-        
-    embed.set_footer(text=f"Tổng giá trị danh mục BĐS: ${total_val:,.2f} | Dùng !sell_property [ID] để chốt lời/cắt lỗ.")
-    await ctx.send(embed=embed)
-
-@bot.command(name="sell_property")
-async def sell_property(ctx, prop_id: int):
-    user_id = ctx.author.id
-    conn = sqlite3.connect("game.db")
-    cursor = conn.cursor()
-    cursor.execute("SELECT property_name, current_value FROM real_estate WHERE id = ? AND user_id = ?", (prop_id, user_id))
-    row = cursor.fetchone()
-    
-    if not row:
-        conn.close()
-        return await ctx.send("❌ Không tìm thấy bất động sản với ID này trong danh mục của bạn!")
-        
-    name, val = row
-    cursor.execute("DELETE FROM real_estate WHERE id = ?", (prop_id,))
-    conn.commit()
-    conn.close()
-    
-    player = get_player(user_id)
-    player['money'] += val
-    update_player(user_id, player)
-    
-    await ctx.send(f"💰 Đã bán thành công **{name}** (ID: {prop_id}) và thu về **${val:,.2f}** tiền mặt!")
-
-@bot.command(name="tech_tree")
-async def show_tech_tree(ctx):
-    player = get_player(ctx.author.id)
-    embed = discord.Embed(title="🔬 CÂY CÔNG NGHỆ QUÂN SỰ - CÔNG NGHIỆP", color=discord.Color.blue())
-    embed.description = (
-        f"Cấp độ nghiên cứu hiện tại: **Cấp {player['tech']}**\n\n"
-        "🚀 **Nâng cấp Công nghệ Cấp 2**\n"
-        "   - Yêu cầu: 50 Thép (Steel) + $5,000\n"
-        "   - Hiệu quả: Tăng 2x hiệu suất sản xuất toàn nhà máy!\n"
-        "   - Lệnh nghiên cứu: `!research`"
+    await interaction.response.edit_message(
+        content=(
+            f"✅ **Giao dịch thành công!** {self.target.mention} đã mua"
+            f" {self.amount}x `{self.item}` từ {self.sender.mention} với giá"
+            f" **${self.price:,}**."
+        ),
+        view=None,
     )
-    await ctx.send(embed=embed)
+
+
+# --------------------------------------------------
+# 4. CÂY CÔNG NGHIỆP QUÂN SỰ (MILITARY-INDUSTRIAL COMPLEX)
+# --------------------------------------------------
+@bot.command(name="buildmil")
+async def buildmil(ctx):
+  p = get_player(ctx.author.id)
+  cost = (p["military_factories"] + 1) * 3000
+
+  if p["balance"] < cost:
+    return await ctx.send(
+        f"❌ Ngài cần **${cost:,}** để xây Nhà máy Quốc phòng tiếp theo!"
+    )
+
+  p["balance"] -= cost
+  p["military_factories"] += 1
+  await ctx.send(
+      f"🏭 **Thành công!** Ngài vừa xây dựng 1 **Nhà máy Quốc phòng** (Tổng"
+      f" cộng: {p['military_factories']})."
+  )
+
 
 @bot.command(name="research")
-async def research_tech(ctx):
-    player = get_player(ctx.author.id)
-    if player['tech'] >= 2:
-        return await ctx.send("🔥 Đã đạt cấp độ công nghệ tối đa hiện tại!")
-    
-    cost_money, cost_steel = 5000, 50
-    if player['money'] < cost_money or player['steel'] < cost_steel:
-        return await ctx.send(f"❌ Không đủ nguyên liệu! Cần `${cost_money}` và `{cost_steel} Thép`.")
+async def research(ctx):
+  p = get_player(ctx.author.id)
+  cost = p["tech_level"] * 5000
 
-    player['money'] -= cost_money
-    player['steel'] -= cost_steel
-    player['tech'] += 1
-    update_player(ctx.author.id, player)
-    await ctx.send("🎉 Nghiên cứu thành công! Đế chế của bạn đã bước vào kỷ nguyên công nghệ Cấp 2!")
+  if p["balance"] < cost:
+    return await ctx.send(
+        f"❌ Ngài cần **${cost:,}** để nâng cấp Công nghệ Quân sự lên Cấp"
+        f" {p['tech_level'] + 1}!"
+    )
 
-@bot.command(name="pay_debt")
-async def pay_debt(ctx, amount: float):
-    player = get_player(ctx.author.id)
-    if player['money'] < amount: return await ctx.send("❌ Không đủ tiền mặt!")
-    actual = min(amount, player['debt'])
-    player['money'] -= actual
-    player['debt'] -= actual
-    update_player(ctx.author.id, player)
-    await ctx.send(f"✅ Đã trả bớt `${actual:,.2f}` tiền nợ. Còn lại: `${player['debt']:,.2f}`.")
+  p["balance"] -= cost
+  p["tech_level"] += 1
+  await ctx.send(
+      f"🔬 **Nghiên cứu hoàn tất!** Công nghệ Quân sự của ngài đã đạt **Cấp"
+      f" {p['tech_level']}**!"
+  )
 
-@bot.command(name="shop")
-async def shop(ctx):
-    player = get_player(ctx.author.id)
-    embed = discord.Embed(title="🛒 CỬA HÀNG QUÂN SỰ", description="!buy_item sungluc ($1500) | !buy_item giap ($2500) | !buy_item thapphao ($6000)", color=discord.Color.gold())
-    embed.add_field(name="Chỉ số", value=f"⚔️ Sức mạnh: {player['weapon']} | 🛡️ Giáp: {player['defense']}", inline=False)
-    await ctx.send(embed=embed)
 
-@bot.command(name="buy_item")
-async def buy_item(ctx, code: str):
-    player, code = get_player(ctx.author.id), code.lower()
-    cost, w, d, name = (1500, 10, 0, "Súng lục") if code=="sungluc" else (2500, 0, 15, "Áo giáp") if code=="giap" else (6000, 25, 15, "Tháp pháo") if code=="thapphao" else (0,0,0,"")
-    if not cost or player['money'] < cost: return await ctx.send("❌ Không đủ tiền hoặc sai mã vật phẩm!")
-    player['money'] -= cost
-    player['weapon'] += w
-    player['defense'] += d
-    update_player(ctx.author.id, player)
-    file = create_vn_image((30, 45, 30), "Quản gia Alfred", f"Đã trang bị {name}! Sẵn sàng chiến đấu.")
-    await ctx.send(file=file)
+@bot.command(name="produce")
+async def produce(ctx, unit: str = None, amount: int = 1):
+  p = get_player(ctx.author.id)
+  recipes = {
+      "tank": {"sat": 5, "cost": 1000, "tech": 1},
+      "plane": {"sat": 10, "cost": 2500, "tech": 2},
+      "missile": {"sat": 15, "cost": 5000, "tech": 3},
+      "ammo": {"sat": 1, "cost": 100, "tech": 1},
+  }
 
-@bot.command(name="transfer")
-async def transfer_money(ctx, member: discord.Member, amount: float):
-    sender_id = ctx.author.id
-    if sender_id == member.id: return await ctx.send("❌ Không thể chuyển tiền cho chính mình!")
-    if amount <= 0: return await ctx.send("❌ Số tiền không hợp lệ!")
-    
-    sender = get_player(sender_id)
-    if sender['daily_transferred'] + amount > 5000:
-        remaining = 5000 - sender['daily_transferred']
-        return await ctx.send(f"⚠️ Vượt hạn mức chuyển tiền trong ngày! Bạn chỉ còn có thể chuyển tối đa `${max(0, remaining)}` nữa hôm nay.")
+  if not unit or unit.lower() not in recipes or amount <= 0:
+    return await ctx.send(
+        "❌ **Cú pháp:** `!produce <tank|plane|missile|ammo> <số_lượng>`\n•"
+        " `tank`: 5 Sắt, $1,000 (Tech 1)\n• `plane`: 10 Sắt, $2,500 (Tech 2)\n•"
+        " `missile`: 15 Sắt, $5,000 (Tech 3)\n• `ammo`: 1 Sắt, $100 (Đạn)"
+    )
 
-    if sender['money'] < amount: return await ctx.send("❌ Không đủ tiền mặt trong ví!")
-    
-    receiver = get_player(member.id)
-    sender['money'] -= amount
-    sender['daily_transferred'] += amount
-    receiver['money'] += amount
-    
-    update_player(sender_id, sender)
-    update_player(member.id, receiver)
-    await ctx.send(f"💸 Đã chuyển thành công **${amount:,.2f}** cho {member.mention}! (Đã dùng: `${sender['daily_transferred']}/$5,000` hạn mức ngày)")
+  unit = unit.lower()
+  req = recipes[unit]
 
-@bot.command(name="raid")
-async def raid_player(ctx, member: discord.Member):
-    attacker_id = ctx.author.id
-    if attacker_id == member.id: return await ctx.send("❌ Không thể tự cướp nhà máy của mình!")
-    
-    attacker = get_player(attacker_id)
-    defender = get_player(member.id)
-    
-    att_power = attacker['weapon'] * 2 + attacker['defense']
-    def_power = defender['weapon'] + defender['defense'] * 2
-    
-    if att_power <= 0:
-        return await ctx.send("❌ Quân lực quá yếu! Hãy dùng `!shop` mua súng lục hoặc tháp pháo trước.")
-        
-    if att_power > def_power:
-        loot = min(defender['money'], random.randint(100, 500))
-        defender['money'] -= loot
-        attacker['money'] += loot
-        update_player(attacker_id, attacker)
-        update_player(member.id, defender)
-        await ctx.send(f"⚔️ **ĐỘT KÍCH THÀNH CÔNG!** Cướp được **${loot}** từ {member.mention}!")
+  if p["tech_level"] < req["tech"]:
+    return await ctx.send(
+        f"❌ Ngài cần Công nghệ Quân sự **Cấp {req['tech']}** để sản xuất"
+        f" {unit.upper()}!"
+    )
+  if p["military_factories"] < 1:
+    return await ctx.send(
+        "❌ Ngài cần có ít nhất 1 **Nhà máy Quốc phòng** (`!buildmil`)!"
+    )
+
+  total_sat = req["sat"] * amount
+  total_cost = req["cost"] * amount
+
+  if p["inventory"].get("sat", 0) < total_sat:
+    return await ctx.send(
+        f"❌ Không đủ Sắt! Ngài cần {total_sat} Sắt để chế tạo."
+    )
+  if p["balance"] < total_cost:
+    return await ctx.send(
+        f"❌ Không đủ ngân sách! Ngài cần **${total_cost:,}**."
+    )
+
+  p["inventory"]["sat"] -= total_sat
+  p["balance"] -= total_cost
+  p["military"][unit] += amount
+
+  await ctx.send(
+      f"🪖 **Sản xuất hoàn tất!** +{amount}x `{unit.upper()}` đã được thêm vào"
+      " kho vũ khí."
+  )
+
+
+# --------------------------------------------------
+# 5. CƠ CHẾ CHIẾN ĐẤU XÂM CHIẾM (CONQUER THE WORLD)
+# --------------------------------------------------
+def calculate_power(p):
+  # Công thức tính sức mạnh: Tank=100, Plane=250, Missile=500, Nhân với Tech Level
+  m = p["military"]
+  raw_power = (
+      (m["tank"] * 100) + (m["plane"] * 250) + (m["missile"] * 500)
+  ) * p["tech_level"]
+  return raw_power
+
+
+@bot.command(name="conquer")
+async def conquer(ctx, target: discord.Member = None):
+  p_attacker = get_player(ctx.author.id)
+
+  now = time.time()
+  if now - p_attacker["last_conquer"] < 600:  # 10 phút hồi chiêu
+    wait = int(600 - (now - p_attacker["last_conquer"]))
+    return await ctx.send(
+        f"⏳ Quân đội đang sắp xếp lại đội hình! Hãy chờ {wait}s nữa để phát"
+        " động chiến dịch mới."
+    )
+
+  attacker_power = calculate_power(p_attacker)
+  if attacker_power <= 0:
+    return await ctx.send(
+        "❌ Ngài không có lực lượng quân sự! Hãy dùng `!produce` để sản xuất"
+        " Xe tăng/Máy bay."
+    )
+
+  if p_attacker["military"]["ammo"] < 10:
+    return await ctx.send(
+        "❌ Quân đội thiếu đạn dược! Ngài cần ít nhất 10 Đạn (`!produce ammo`)"
+        " để tiến công."
+    )
+
+  p_attacker["military"]["ammo"] -= 10
+  p_attacker["last_conquer"] = now
+
+  # Truong hop 1: Danh NPC mở rộng lãnh thổ
+  if not target or target.id == ctx.author.id:
+    npc_power = p_attacker["territories"] * 300
+    win_chance = attacker_power / (attacker_power + npc_power)
+
+    if random.random() < win_chance:
+      p_attacker["territories"] += 1
+      stolen_cash = p_attacker["territories"] * 1000
+      p_attacker["balance"] += stolen_cash
+      await ctx.send(
+          "🌍 **CHIẾN THẮNG RỰC RỠ!** Ngài đã xâm chiếm thành công 1 Lãnh thổ"
+          f" mới! (Tổng: {p_attacker['territories']} vùng đất, Chiếm đoạt:"
+          f" **${stolen_cash:,}**)"
+      )
     else:
-        fine = min(attacker['money'], 150)
-        attacker['money'] -= fine
-        update_player(attacker_id, attacker)
-        await ctx.send(f"🛡️ **PHÒNG THỦ THÀNH CÔNG!** {member.mention} đã đánh bật cuộc tập kích. Bị phạt **${fine}**!")
+      # Tổn thất 20% Tank
+      lost_tanks = int(p_attacker["military"]["tank"] * 0.2)
+      p_attacker["military"]["tank"] -= lost_tanks
+      await ctx.send(
+          "💥 **CHIẾN DỊCH THẤT BẠI!** Lực lượng phòng thủ vùng đất quá mạnh."
+          f" Ngài mất {lost_tanks} Xe tăng trong trận chiến."
+      )
 
+  # Truong hop 2: Đánh người chơi khác
+  else:
+    p_defender = get_player(target.id)
+    defender_power = calculate_power(p_defender) + (
+        p_defender["territories"] * 200
+    )
+
+    if attacker_power > defender_power:
+      stolen_land = 1 if p_defender["territories"] > 1 else 0
+      p_defender["territories"] -= stolen_land
+      p_attacker["territories"] += stolen_land
+
+      stolen_cash = int(p_defender["balance"] * 0.25)
+      p_defender["balance"] -= stolen_cash
+      p_attacker["balance"] += stolen_cash
+
+      await ctx.send(
+          f"⚔️ **ĐẠI THẮNG!** Quân đội của {ctx.author.mention} (Sức mạnh:"
+          f" {attacker_power:,}) đã đè bẹp {target.mention} (Sức mạnh:"
+          f" {defender_power:,})!\n• Cướp được **${stolen_cash:,}**\n• Cướp"
+          f" được {stolen_land} Lãnh thổ!"
+      )
+    else:
+      # Phạt giảm sức mạnh
+      p_attacker["military"]["tank"] = int(p_attacker["military"]["tank"] * 0.7)
+      await ctx.send(
+          f"🛡️ **THẤT BẠI TẢN MÁC!** {target.mention} đã phòng thủ kiên"
+          f" cường. {ctx.author.mention} bị thiệt hại 30% lực lượng Xe tăng!"
+      )
+
+
+# --------------------------------------------------
+# 6. KINH TẾ DÂN SỰ & THƯƠNG MẠI
+# --------------------------------------------------
+@bot.command(name="buyland")
+async def buyland(ctx, land_type: str = None):
+  p = get_player(ctx.author.id)
+  prices = {"nhamay": 2000, "trangtrai": 1000}
+
+  if not land_type or land_type.lower() not in prices:
+    return await ctx.send(
+        "❌ **Cú pháp:** `!buyland <nhamay|trangtrai>`\n• `trangtrai`: $1,000\n•"
+        " `nhamay`: $2,000"
+    )
+
+  land_type = land_type.lower()
+  cost = prices[land_type]
+  if p["balance"] < cost:
+    return await ctx.send(f"❌ Bạn cần **${cost:,}**!")
+
+  p["balance"] -= cost
+  p["lands"].append(
+      {"type": land_type, "level": 1, "last_harvest": time.time()}
+  )
+  await ctx.send(f"🏗️ Ngài đã mua 1 `{land_type}`.")
+
+
+@bot.command(name="harvest")
+async def harvest(ctx):
+  p = get_player(ctx.author.id)
+  now = time.time()
+  total_sat, total_nongsan = 0, 0
+
+  for land in p["lands"]:
+    elapsed = now - land["last_harvest"]
+    if elapsed >= 60:
+      cycles = int(elapsed // 60)
+      land["last_harvest"] = now
+      if land["type"] == "nhamay":
+        total_sat += cycles * 5
+      elif land["type"] == "trangtrai":
+        total_nongsan += cycles * 10
+
+  p["inventory"]["sat"] = p["inventory"].get("sat", 0) + total_sat
+  p["inventory"]["nongsan"] = p["inventory"].get("nongsan", 0) + total_nongsan
+  await ctx.send(
+      f"📦 **Thu hoạch:** +{total_sat} Sắt, +{total_nongsan} Nông sản."
+  )
+
+
+@bot.command(name="sell")
+async def sell(ctx, item: str = None, amount: int = 1):
+  p = get_player(ctx.author.id)
+  price_table = {"sat": 50, "nongsan": 20}
+
+  if not item or item.lower() not in price_table or amount <= 0:
+    return await ctx.send("❌ **Cú pháp:** `!sell <sat|nongsan> <số_lượng>`")
+
+  item = item.lower()
+  if p["inventory"].get(item, 0) < amount:
+    return await ctx.send(f"❌ Không đủ {item}!")
+
+  earned = price_table[item] * amount
+  p["inventory"][item] -= amount
+  p["balance"] += earned
+  await ctx.send(f"💰 Đã bán {amount}x `{item}` lấy **${earned:,}**.")
+
+
+@bot.command(name="pay")
+async def pay(ctx, target: discord.Member = None, amount: int = 0):
+  if not target or target.bot or amount <= 0:
+    return await ctx.send("❌ **Cú pháp:** `!pay @NgườiDùng <số_tiền>`")
+  p_sender, p_target = get_player(ctx.author.id), get_player(target.id)
+
+  if p_sender["balance"] < amount:
+    return await ctx.send("❌ Không đủ tiền!")
+
+  p_sender["balance"] -= amount
+  p_target["balance"] += amount
+  await ctx.send(f"💸 Đã chuyển **${amount:,}** cho {target.mention}.")
+
+
+@bot.command(name="trade")
+async def trade(
+    ctx, target: discord.Member = None, item: str = None, amount: int = 1, price: int = 0
+):
+  if not target or target.bot or not item or price <= 0:
+    return await ctx.send(
+        "❌ **Cú pháp:** `!trade @NgườiDùng <vật_phẩm> <số_lượng> <giá>`"
+    )
+  item = item.lower()
+  if get_player(ctx.author.id)["inventory"].get(item, 0) < amount:
+    return await ctx.send(f"❌ Không đủ `{item}`!")
+
+  view = TradeView(ctx.author, target, item, amount, price)
+  await ctx.send(
+      f"🤝 {target.mention}, {ctx.author.mention} muốn bán **{amount}x"
+      f" `{item}`** với giá **${price:,}**.",
+      view=view,
+  )
+
+
+# --------------------------------------------------
+# 7. TRẠNG THÁI & HỆ THỐNG
+# --------------------------------------------------
+@bot.event
+async def on_ready():
+  print(f"✅ Bot đã đăng nhập: {bot.user.name}")
+
+
+@bot.command(name="startgame")
+async def startgame(ctx):
+  img_filename = get_alfred_image()
+  p = get_player(ctx.author.id)
+  p["step"] = 1
+
+  dialogue_text = (
+      f"Chào mừng ngài đã trở lại hệ thống, {ctx.author.display_name}.\nTình"
+      " hình hiện tại đang rất khẩn cấp, xin hãy chú ý lắng nghe."
+  )
+  embed = discord.Embed(
+      title="🎮 KHỞI ĐẦU TRÒ CHƠI", description=dialogue_text, color=0x2B2D31
+  )
+  embed.add_field(
+      name="📜 Hướng dẫn lệnh quân sự & kinh tế",
+      value=(
+          "• `!buildmil` / `!research` / `!produce` - Công nghiệp quân sự\n•"
+          " `!conquer [@user]` - Xâm chiếm lãnh thổ\n• `!buyland` / `!harvest` /"
+          " `!sell` - Kinh tế dân sự\n• `!status` / `!army` - Kiểm tra thông"
+          " tin"
+      ),
+      inline=False,
+  )
+
+  if img_filename:
+    file = discord.File(img_filename, filename=img_filename)
+    embed.set_image(url=f"attachment://{img_filename}")
+    await ctx.send(file=file, embed=embed, view=GameStoryView())
+  else:
+    await ctx.send(embed=embed, view=GameStoryView())
+
+
+@bot.command(name="army")
+async def army(ctx):
+  p = get_player(ctx.author.id)
+  m = p["military"]
+  power = calculate_power(p)
+
+  embed = discord.Embed(
+      title=f"🪖 ĐỘI HÌNH QUÂN SỰ - {ctx.author.display_name}",
+      color=discord.Color.red(),
+  )
+  embed.add_field(
+      name="⚡ Tổng Sức Mạnh", value=f"**{power:,}** Power", inline=False
+  )
+  embed.add_field(
+      name="🔬 Cấp Công Nghệ", value=f"Cấp {p['tech_level']}", inline=True
+  )
+  embed.add_field(
+      name="🏭 Nhà Máy QP", value=f"{p['military_factories']}", inline=True
+  )
+  embed.add_field(
+      name="🌍 Lãnh Thổ", value=f"{p['territories']} Vùng", inline=True
+  )
+  embed.add_field(
+      name="📦 Lực Lượng",
+      value=(
+          f"• **Xe tăng**: {m['tank']}\n• **Máy bay**: {m['plane']}\n• **Tên"
+          f" lửa**: {m['missile']}\n• **Đạn dược**: {m['ammo']}"
+      ),
+      inline=False,
+  )
+  await ctx.send(embed=embed)
+
+
+@bot.command(name="status")
+async def status(ctx):
+  p = get_player(ctx.author.id)
+  embed = discord.Embed(
+      title=f"📊 Trạng Thái - {ctx.author.display_name}",
+      color=discord.Color.blue(),
+  )
+  embed.add_field(name="💰 Ngân sách", value=f"${p['balance']:,}", inline=True)
+  embed.add_field(
+      name="⚡ Sức mạnh", value=f"{calculate_power(p):,}", inline=True
+  )
+  embed.add_field(
+      name="🌍 Lãnh thổ", value=f"{p['territories']}", inline=True
+  )
+  await ctx.send(embed=embed)
+
+
+# --------------------------------------------------
+# 8. CHẠY BOT
+# --------------------------------------------------
 if __name__ == "__main__":
-    bot.run(DISCORD_TOKEN)
+  bot.run("YOUR_BOT_TOKEN_HERE")
