@@ -1,989 +1,506 @@
-import asyncio
+import io
 import os
 import random
-import threading
+import sqlite3
 import discord
-from discord.ext import commands
-from flask import Flask
+from discord.ext import commands, tasks
+from PIL import Image, ImageDraw, ImageFont
+import google.generativeai as genai
 
-# ================= 1. WEB SERVER (FLASK) =================
-app = Flask(__name__)
-
-
-@app.route("/")
-def home():
-  return "War Thunder Advanced Co-op & Infantry Bot Operational..."
-
-
-def run_flask():
-  port = int(os.environ.get("PORT", 8080))
-  app.run(host="0.0.0.0", port=port)
-
-
-def keep_alive():
-  server_thread = threading.Thread(target=run_flask)
-  server_thread.daemon = True
-  server_thread.start()
-
-
-# ================= 2. BOT CONFIG =================
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN", "YOUR_DISCORD_BOT_TOKEN")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "YOUR_GEMINI_API_KEY")
+
+if GEMINI_API_KEY != "YOUR_GEMINI_API_KEY":
+    genai.configure(api_key=GEMINI_API_KEY)
+    gemini_model = genai.GenerativeModel("gemini-1.5-flash")
+else:
+    gemini_model = None
 
 intents = discord.Intents.default()
 intents.message_content = True
+bot = commands.Bot(command_prefix="!", intents=intents)
 
-bot = commands.Bot(command_prefix="!", intents=intents, help_command=None)
-coop_sessions = {}
-infantry_sessions = {}
+GRID_ROWS = 4
+GRID_COLS = ["A", "B", "C", "D"]
 
-
-# ================= 3. CO-OP SESSION CLASS =================
-class CoOpSession:
-
-  def __init__(
-      self,
-      members,
-      mode_type,
-      sub_mode=3,
-      faction="Nga",
-      heli_model="Ka-50",
-  ):
-    self.members = members
-    self.mode_type = mode_type
-    self.sub_mode = sub_mode
-    self.faction = faction
-    self.heli_model = heli_model
-
-    if mode_type == "tank":
-      self.team = "Nga (T-90M)" if sub_mode == 3 else "NATO (M1A3 Abrams)"
-      self.commander = members[0]
-      self.driver = members[1]
-      self.gunner = members[2]
-      self.loader = members[3] if sub_mode == 4 else None
-    else:
-      if sub_mode == 1:
-        self.solo_player = members[0]
-        self.pilot = members[0]
-        self.gunner_cmd = members[0]
-        self.current_view = "pilot"
-      else:
-        self.pilot = members[0]
-        self.gunner_cmd = members[1]
-
-      self.team = f"{faction} ({heli_model})"
-
-    self.hp = 100
-    self.enemy_hp = 100
-    self.turret_angle = 12
-    self.current_ammo = "APFSDS" if mode_type == "tank" else "ATGM / Hellfire"
-    self.loader_cooldown = 0
-    self.driver_pos = "Tuyến đầu"
-    self.radar_locked = False
-    self.lock_target_info = "Chưa lock"
-    self.under_sam_attack = False
-    self.sam_warning_msg = "An toàn"
-    self.last_log = "Sẵn sàng chiến đấu!"
-
-    self.has_radar = True
-    if heli_model in ["Ka-50", "Mi-24 SuperHind"]:
-      self.has_radar = False
-      self.lock_target_info = "Ngắm thủ công"
-
-
-# ================= 4. INFANTRY SESSION CLASS =================
-class InfantrySession:
-
-  def __init__(self, player: discord.Member):
-    self.player = player
-    self.hp = 100
-    self.enemy_hp = 150
-    self.in_cover = False
-    self.rifle_ammo = 30
-    self.shotgun_ammo = 8
-    self.rocket_ammo = 2
-
-
-def generate_infantry_hud(session: InfantrySession) -> str:
-  cover_status = "🛡️ ĐANG NÚP CÔNG SỰ" if session.in_cover else "⚠️ ĐANG LỘ DIỆN"
-  return f"""```text
-┌──────────────────────────────┐
-│ INFANTRY HUD | LOST FRONT    │
-├──────────────────────────────┤
-│ MỤC TIÊU (BOSS): {session.enemy_hp:^3}% HP     │
-│ TRẠNG THÁI: {cover_status:^16} │
-├──────────────────────────────┤
-│  [ MẠNG: {session.hp:^3}% ]  [ ĐẠN RIFLE: {session.rifle_ammo:^2} ]│
-│  [ SHOTGUN: {session.shotgun_ammo:^2} ]  [ ROCKET:    {session.rocket_ammo:^2} ]│
-└──────────────────────────────┘
-```"""
-
-
-# ================= 5. ASCII MAP COMPACT =================
-def generate_role_ascii_map(coop: CoOpSession, role: str) -> str:
-  unit = (
-      coop.team.split("(")[-1].replace(")", "")
-      if "(" in coop.team
-      else coop.team
-  )
-  unit_tag = f"[{unit[:8]:^8}]"
-
-  if coop.mode_type == "tank":
-    if role == "commander":
-      header = f"COMMANDER | HƯỚNG:{coop.turret_angle}H"
-      enemy_sec = (
-          " [1,1]    [1,2]    [1,3] \n  v        v        v   \n [T72]    [BMP]"
-          "   [ATGM]"
-          if coop.enemy_hp > 0
-          else "   💥 TIÊU DIỆT MỤC TIÊU 💥   "
-      )
-      bottom = f"LÁI XE: {coop.driver_pos[:12]}"
-    elif role == "driver":
-      header = f"DRIVER HUD | THÂN XE"
-      enemy_sec = (
-          f"     ▲ PHÍA TRƯỚC ▲      \n VỊ TRÍ: {coop.driver_pos[:14]}\n"
-          " ═════════════════════════"
-      )
-      bottom = f"ĐỘNG CƠ: 100% OK"
-    else:
-      header = f"GUNNER FCS | {coop.turret_angle}H"
-      enemy_sec = (
-          "           |             \n       ───[ + ]───       \n     MỤC"
-          f" TIÊU: {coop.enemy_hp}% HP"
-          if coop.enemy_hp > 0
-          else "   💥 MỤC TIÊU ĐÃ SẬP 💥  "
-      )
-      bottom = f"ĐẠN: {coop.current_ammo:<6} | CD: {coop.loader_cooldown}s"
-  else:
-    if role == "pilot":
-      header = f"PILOT HUD | {coop.heli_model[:10]}"
-      sam_txt = (
-          "🚨 MỤC TIÊU BẮN TRẢ! 🚨"
-          if coop.under_sam_attack
-          else "   [ BẦU TRỜI AN TOÀN ]  "
-      )
-      enemy_sec = (
-          f"BAY: {coop.driver_pos[:18]}\n{sam_txt}\n ═════════════════════════"
-      )
-      bottom = (
-          f"CẢNH BÁO: {'🔴 CÓ NGUY HIỂM' if coop.under_sam_attack else '🟢 AN TOÀN'} |"
-          f" HP:{coop.hp}%"
-      )
-    else:
-      header = f"GUNNER RADAR | {coop.heli_model[:8]}"
-      radar_txt = (
-          "🎯 RADAR LOCK ON"
-          if coop.radar_locked
-          else ("🔍 SCANNING..." if coop.has_radar else "👁️ OPTICS LOCK")
-      )
-      enemy_sec = (
-          f"           |             \n    {radar_txt:^17}\n     MỤC"
-          f" TIÊU: {coop.enemy_hp}% HP"
-      )
-      bottom = f"LOCK: {coop.lock_target_info[:10]} | HP:{coop.hp}%"
-
-  return f"""```text
-┌──────────────────────────────┐
-│ {header:<28} │
-├──────────────────────────────┤
-{enemy_sec}
-│ ───────────┬────┬─────────── │
-│          {unit_tag}          │
-├──────────────────────────────┤
-│ {bottom:<28} │
-└──────────────────────────────┘
-```"""
-
-
-# ================= 6. LOGIC ĐỊCH ĐÁNH TRẢ (AA / SAM) =================
-async def trigger_enemy_retaliation(channel, coop: CoOpSession):
-  if coop.hp <= 0 or coop.enemy_hp <= 0:
-    return
-
-  # Tỷ lệ 50% dùng Súng phòng không (AA), 50% phóng Tên lửa SAM
-  attack_type = random.choice(["AA_GUN", "SAM_MISSILE"])
-
-  if attack_type == "AA_GUN":
-    # Bắn phòng không ngầm phản công tức thì
-    dmg = random.randint(10, 25)
-    coop.hp = max(0, coop.hp - dmg)
-
-    aa_embed = discord.Embed(
-        title="⚡ ĐỊCH BẮN TRẢ BẰNG SÚNG PHÒNG KHÔNG (AA)!",
-        description=(
-            f"🔫 Trận địa phòng không đối phương xả đạn phòng không 23mm/30mm!\n"
-            f"💥 **Tổn thất:** `-{dmg}% HP`\n"
-            f"❤️ **HP còn lại:** **{coop.hp}%**"
-        ),
-        color=discord.Color.dark_orange(),
-    )
-    await channel.send(embed=aa_embed, delete_after=6)
-
-  else:
-    # Phóng tên lửa SAM (cho phi công thời gian né/thả flare)
-    if coop.under_sam_attack:
-      return
-
-    coop.under_sam_attack = True
-    delay_time = random.randint(3, 6)
-
-    warn_embed = discord.Embed(
-        title="🚨 BÁO ĐỘNG TÊN LỬA PHÒNG KHÔNG (SAM) 🚨",
-        description=(
-            f"⚡ **Phát hiện tên lửa SAM đang khóa vào {coop.heli_model}!**\n"
-            f"⏱️ **Thời gian va chạm:** `{delay_time} giây`!\n"
-            "👉 **Phi công hãy thả Flare hoặc Lách né khẩn cấp ngay!**"
-        ),
-        color=discord.Color.red(),
-    )
-    await channel.send(embed=warn_embed, delete_after=5)
-
-    await asyncio.sleep(delay_time)
-
-    if coop.under_sam_attack and coop.hp > 0:
-      dmg = random.randint(30, 50)
-      coop.hp = max(0, coop.hp - dmg)
-      coop.under_sam_attack = False
-
-      hit_embed = discord.Embed(
-          title="💥 TÊN LỬA SAM ĐÃ TRÚNG ĐÍCH!",
-          description=(
-              f"❌ Quá thời gian né tránh! Tên lửa va chạm gây **-{dmg}% HP**.\n"
-              f"❤️ **HP còn lại:** **{coop.hp}%**"
-          ),
-          color=discord.Color.dark_red(),
-      )
-      await channel.send(embed=hit_embed, delete_after=5)
-
-
-# ================= 7. VIEWS CO-OP TRỰC THĂNG / TANK =================
-class CommanderCaroView(discord.ui.View):
-
-  def __init__(self, coop: CoOpSession):
-    super().__init__(timeout=300)
-    self.coop = coop
-    for r in range(3):
-      for c in range(3):
-        btn = discord.ui.Button(
-            label=f"[{r+1},{c+1}]", style=discord.ButtonStyle.secondary, row=r
+def init_db():
+    conn = sqlite3.connect("game.db")
+    cursor = conn.cursor()
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS players (
+            user_id INTEGER PRIMARY KEY,
+            money REAL DEFAULT 1000.0,
+            debt REAL DEFAULT 500000.0,
+            ore INTEGER DEFAULT 0,
+            steel INTEGER DEFAULT 0,
+            weapon_power INTEGER DEFAULT 0,
+            defense_power INTEGER DEFAULT 0,
+            territory_level INTEGER DEFAULT 1,
+            tech_level INTEGER DEFAULT 1,
+            last_transfer_date TEXT DEFAULT '',
+            daily_transferred REAL DEFAULT 0.0
         )
-        btn.callback = self.make_cb(r, c)
-        self.add_item(btn)
-
-  def make_cb(self, r, c):
-    async def cb(interaction: discord.Interaction):
-      if interaction.user != self.coop.commander:
-        return await interaction.response.send_message(
-            "⚠️ Chỉ Chỉ huy mới dùng bảng này!", ephemeral=True
+    """)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS grid_cells (
+            user_id INTEGER,
+            cell_id TEXT,
+            building_type TEXT DEFAULT 'trong',
+            connected_to TEXT DEFAULT '',
+            PRIMARY KEY (user_id, cell_id)
         )
-      hour = random.choice([1, 2, 3, 9, 10, 11, 12])
-      self.coop.last_log = f"🎯 Phát hiện địch ô [{r+1},{c+1}] - Hướng {hour}H"
-      await interaction.response.send_message(
-          f"✅ Mục tiêu tại ô [{r+1},{c+1}]! Hướng: **{hour} giờ**.",
-          ephemeral=True,
-      )
-
-    return cb
-
-
-class DriverControlView(discord.ui.View):
-
-  def __init__(self, coop: CoOpSession):
-    super().__init__(timeout=300)
-    self.coop = coop
-
-  async def move(self, interaction: discord.Interaction, pos):
-    if interaction.user != self.coop.driver:
-      return await interaction.response.send_message(
-          "⚠️ Chỉ Lái xe mới điều khiển!", ephemeral=True
-      )
-    self.coop.driver_pos = pos
-    await interaction.response.send_message(
-        f"🏎️ Vị trí mới: **{pos}**", ephemeral=True
-    )
-
-  @discord.ui.button(
-      label="⬆️ Tiến thẳng", style=discord.ButtonStyle.success, row=0
-  )
-  async def ts(
-      self, interaction: discord.Interaction, button: discord.ui.Button
-  ):
-    await self.move(interaction, "Tiến thẳng")
-
-  @discord.ui.button(
-      label="↗️ Tiến phải", style=discord.ButtonStyle.success, row=0
-  )
-  async def tr(
-      self, interaction: discord.Interaction, button: discord.ui.Button
-  ):
-    await self.move(interaction, "Tiến phải")
-
-  @discord.ui.button(
-      label="⬇️ Lùi ẩn nấp", style=discord.ButtonStyle.danger, row=1
-  )
-  async def bs(
-      self, interaction: discord.Interaction, button: discord.ui.Button
-  ):
-    await self.move(interaction, "Lùi nấp")
-
-
-class HeliPilotView(discord.ui.View):
-
-  def __init__(self, coop: CoOpSession):
-    super().__init__(timeout=300)
-    self.coop = coop
-
-    if coop.sub_mode == 1:
-      switch_btn = discord.ui.Button(
-          label="🔄 Đổi Góc Nhìn (Xạ Thủ)",
-          style=discord.ButtonStyle.primary,
-          row=0,
-      )
-      switch_btn.callback = self.switch_view_cb
-      self.add_item(switch_btn)
-
-  async def switch_view_cb(self, interaction: discord.Interaction):
-    if interaction.user != self.coop.solo_player:
-      return await interaction.response.send_message(
-          "⚠️ Không có quyền!", ephemeral=True
-      )
-    self.coop.current_view = "gunner"
-    embed = discord.Embed(
-        title="🎯 CHUYỂN SANG GÓC NHÌN XẠ THỦ / RADAR",
-        description=generate_role_ascii_map(self.coop, "gunner"),
-        color=discord.Color.orange(),
-    )
-    await interaction.response.send_message(
-        embed=embed, view=HeliGunnerCommanderView(self.coop)
-    )
-
-  async def move_heli(self, interaction: discord.Interaction, pos):
-    user_check = (
-        self.coop.solo_player
-        if self.coop.sub_mode == 1
-        else self.coop.pilot
-    )
-    if interaction.user != user_check:
-      return await interaction.response.send_message(
-          "⚠️ Chỉ Phi công mới điều khiển bay!", ephemeral=True
-      )
-
-    if self.coop.under_sam_attack and pos in ["Lách trái", "Lách phải"]:
-      self.coop.under_sam_attack = False
-      return await interaction.response.send_message(
-          f"🛡️ **NÉ THÀNH CÔNG!** Thao tác **{pos}** đã né trọn tên lửa SAM!",
-          ephemeral=False,
-          delete_after=5,
-      )
-
-    self.coop.driver_pos = pos
-    await interaction.response.send_message(
-        f"🛫 Trạng thái bay: **{pos}**", ephemeral=True
-    )
-
-  @discord.ui.button(
-      label="🔥 THẢ FLARE", style=discord.ButtonStyle.success, row=1
-  )
-  async def flare(
-      self, interaction: discord.Interaction, button: discord.ui.Button
-  ):
-    user_check = (
-        self.coop.solo_player
-        if self.coop.sub_mode == 1
-        else self.coop.pilot
-    )
-    if interaction.user != user_check:
-      return await interaction.response.send_message(
-          "⚠️ Chỉ Phi công mới thả Flare!", ephemeral=True
-      )
-
-    if self.coop.under_sam_attack:
-      self.coop.under_sam_attack = False
-      await interaction.response.send_message(
-          "🔥 **FLARE DEPLOYED!** Mồi bẫy nhiệt đã cản phá thành công tên lửa"
-          " SAM!",
-          ephemeral=False,
-          delete_after=5,
-      )
-    else:
-      await interaction.response.send_message(
-          "✨ Đã thả Flare bẫy nhiệt.", ephemeral=True
-      )
-
-  @discord.ui.button(
-      label="⬅️ Lách trái", style=discord.ButtonStyle.secondary, row=2
-  )
-  async def dodge_left(
-      self, interaction: discord.Interaction, button: discord.ui.Button
-  ):
-    await self.move_heli(interaction, "Lách trái")
-
-  @discord.ui.button(
-      label="➡️ Lách phải", style=discord.ButtonStyle.secondary, row=2
-  )
-  async def dodge_right(
-      self, interaction: discord.Interaction, button: discord.ui.Button
-  ):
-    await self.move_heli(interaction, "Lách phải")
-
-
-class HeliGunnerCommanderView(discord.ui.View):
-
-  def __init__(self, coop: CoOpSession):
-    super().__init__(timeout=300)
-    self.coop = coop
-
-    if coop.sub_mode == 1:
-      switch_btn = discord.ui.Button(
-          label="🔄 Đổi Góc Nhìn (Phi Công)",
-          style=discord.ButtonStyle.primary,
-          row=0,
-      )
-      switch_btn.callback = self.switch_view_cb
-      self.add_item(switch_btn)
-
-  async def switch_view_cb(self, interaction: discord.Interaction):
-    if interaction.user != self.coop.solo_player:
-      return await interaction.response.send_message(
-          "⚠️ Không có quyền!", ephemeral=True
-      )
-    self.coop.current_view = "pilot"
-    embed = discord.Embed(
-        title="🛫 CHUYỂN SANG GÓC NHÌN PHI CÔNG",
-        description=generate_role_ascii_map(self.coop, "pilot"),
-        color=discord.Color.green(),
-    )
-    await interaction.response.send_message(
-        embed=embed, view=HeliPilotView(self.coop)
-    )
-
-  @discord.ui.button(
-      label="📡 Quét Radar / Ngắm", style=discord.ButtonStyle.secondary, row=1
-  )
-  async def scan_radar(
-      self, interaction: discord.Interaction, button: discord.ui.Button
-  ):
-    user_check = (
-        self.coop.solo_player
-        if self.coop.sub_mode == 1
-        else self.coop.gunner_cmd
-    )
-    if interaction.user != user_check:
-      return await interaction.response.send_message(
-          "⚠️ Không có quyền!", ephemeral=True
-      )
-
-    if not self.coop.has_radar:
-      self.coop.radar_locked = True
-      self.coop.lock_target_info = "OPTICS LOCK"
-      await interaction.response.send_message(
-          f"👁️ **[{self.coop.heli_model}]** Khóa quang học thành công!",
-          ephemeral=True,
-      )
-    else:
-      self.coop.radar_locked = True
-      self.coop.lock_target_info = "RADAR LOCK"
-      await interaction.response.send_message(
-          "🎯 **RADAR LOCK-ON!** Đã khóa mục tiêu.", ephemeral=True
-      )
-
-    if random.random() < 0.4:
-      asyncio.create_task(
-          trigger_enemy_retaliation(interaction.channel, self.coop)
-      )
-
-  @discord.ui.button(
-      label="💥 KHAI HỎA ATGM", style=discord.ButtonStyle.danger, row=1
-  )
-  async def fire_heli(
-      self, interaction: discord.Interaction, button: discord.ui.Button
-  ):
-    user_check = (
-        self.coop.solo_player
-        if self.coop.sub_mode == 1
-        else self.coop.gunner_cmd
-    )
-    if interaction.user != user_check:
-      return await interaction.response.send_message(
-          "⚠️ Không có quyền!", ephemeral=True
-      )
-
-    # Tính sát thương ngẫu nhiên 20% đến 40%
-    damage_dealt = random.randint(20, 40)
-    self.coop.enemy_hp = max(0, self.coop.enemy_hp - damage_dealt)
-
-    msg_list = [
-        "Tên lửa ATGM xuyên giáp mục tiêu chính xác!",
-        "Khai hỏa tên lửa dẫn đường đánh trúng nóc xe địch!",
-        "ATGM va chạm trực tiếp gây sát thương nặng!",
-    ]
-    tech_msg = random.choice(msg_list)
-
-    embed = discord.Embed(
-        title=f"💥 KHAI HỎA ATGM ({self.coop.heli_model})",
-        description=(
-            f"📝 *{tech_msg}*\n"
-            f"💥 **Sát thương gây ra:** `-{damage_dealt}% HP`\n"
-            f"🎯 **HP Địch còn lại:** **{self.coop.enemy_hp}%**"
-        ),
-        color=discord.Color.red()
-        if self.coop.enemy_hp <= 0
-        else discord.Color.orange(),
-    )
-
-    await interaction.response.send_message(embed=embed, delete_after=5)
-
-    # Tỷ lệ 60% Địch đánh trả bằng AA hoặc SAM
-    if random.random() < 0.6 and self.coop.enemy_hp > 0:
-      asyncio.create_task(
-          trigger_enemy_retaliation(interaction.channel, self.coop)
-      )
-
-  @discord.ui.button(
-      label="🔫 BẮN SÚNG MÁY (30mm)", style=discord.ButtonStyle.success, row=2
-  )
-  async def fire_cannon(
-      self, interaction: discord.Interaction, button: discord.ui.Button
-  ):
-    user_check = (
-        self.coop.solo_player
-        if self.coop.sub_mode == 1
-        else self.coop.gunner_cmd
-    )
-    if interaction.user != user_check:
-      return await interaction.response.send_message(
-          "⚠️ Không có quyền!", ephemeral=True
-      )
-
-    shot1 = random.randint(5, 12)
-    shot2 = random.randint(5, 12)
-    shot3 = random.randint(5, 12)
-    total_dmg = shot1 + shot2 + shot3
-
-    self.coop.enemy_hp = max(0, self.coop.enemy_hp - total_dmg)
-
-    embed = discord.Embed(
-        title=f"🔫 XẢ SÚNG MÁY 30MM ({self.coop.heli_model})",
-        description=(
-            "💥 **Loạt đạn 3 phát:**\n"
-            f"• Viên 1: `-{shot1}% HP`\n"
-            f"• Viên 2: `-{shot2}% HP`\n"
-            f"• Viên 3: `-{shot3}% HP`\n"
-            f"⚡ **Tổng sát thương:** `-{total_dmg}% HP`\n"
-            f"🎯 **HP Địch còn lại:** **{self.coop.enemy_hp}%**"
-        ),
-        color=discord.Color.gold(),
-    )
-    await interaction.response.send_message(embed=embed, delete_after=5)
-
-
-class GunnerControlView(discord.ui.View):
-
-  def __init__(self, coop: CoOpSession):
-    super().__init__(timeout=300)
-    self.coop = coop
-
-  @discord.ui.button(
-      label="🔄 Xoay tháp (+1h)", style=discord.ButtonStyle.primary, row=0
-  )
-  async def rotate(
-      self, interaction: discord.Interaction, button: discord.ui.Button
-  ):
-    if interaction.user != self.coop.gunner:
-      return await interaction.response.send_message(
-          "⚠️ Chỉ Pháo thủ!", ephemeral=True
-      )
-    self.coop.turret_angle = (self.coop.turret_angle % 12) + 1
-    await interaction.response.send_message(
-        f"🔄 Tháp pháo: **{self.coop.turret_angle} giờ**", ephemeral=True
-    )
-
-  @discord.ui.button(
-      label="💥 KHAI HỎA TANK", style=discord.ButtonStyle.danger, row=1
-  )
-  async def fire(
-      self, interaction: discord.Interaction, button: discord.ui.Button
-  ):
-    if interaction.user != self.coop.gunner:
-      return await interaction.response.send_message(
-          "⚠️ Chỉ Pháo thủ!", ephemeral=True
-      )
-    if self.coop.loader_cooldown > 0 and self.coop.sub_mode == 4:
-      return await interaction.response.send_message(
-          f"⏳ Đang nạp ({self.coop.loader_cooldown}s)!", ephemeral=True
-      )
-
-    # Tính sát thương ngẫu nhiên 20% đến 40%
-    damage_dealt = random.randint(20, 40)
-    self.coop.enemy_hp = max(0, self.coop.enemy_hp - damage_dealt)
-
-    embed = discord.Embed(
-        title="💥 TANK KHAI HỎA",
-        description=(
-            f"📦 Loại đạn: `{self.coop.current_ammo}`\n"
-            f"💥 **Sát thương:** `-{damage_dealt}% HP`\n"
-            f"🎯 **HP Địch còn:** **{self.coop.enemy_hp}%**"
-        ),
-        color=discord.Color.red(),
-    )
-    await interaction.response.send_message(embed=embed, delete_after=5)
-
-
-class LoaderControlView(discord.ui.View):
-
-  def __init__(self, coop: CoOpSession):
-    super().__init__(timeout=300)
-    self.coop = coop
-
-  async def ammo(self, interaction: discord.Interaction, t):
-    if interaction.user != self.coop.loader:
-      return await interaction.response.send_message(
-          "⚠️ Chỉ Nạp đạn viên!", ephemeral=True
-      )
-    if self.coop.loader_cooldown > 0:
-      return await interaction.response.send_message(
-          f"⏳ Đang nạp đạn ({self.coop.loader_cooldown}s)...", ephemeral=True
-      )
-    self.coop.current_ammo = t
-    self.coop.loader_cooldown = 6
-    await interaction.response.send_message(
-        f"✅ Đã nạp đạn **{t}**", ephemeral=True
-    )
-
-    async def cd():
-      await asyncio.sleep(6)
-      self.coop.loader_cooldown = 0
-
-    asyncio.create_task(cd())
-
-  @discord.ui.button(label="📦 APFSDS", style=discord.ButtonStyle.primary)
-  async def a1(
-      self, interaction: discord.Interaction, button: discord.ui.Button
-  ):
-    await self.ammo(interaction, "APFSDS")
-
-  @discord.ui.button(label="🔥 HEAT", style=discord.ButtonStyle.danger)
-  async def a2(
-      self, interaction: discord.Interaction, button: discord.ui.Button
-  ):
-    await self.ammo(interaction, "HEAT")
-
-
-# ================= 8. VIEW BỘ BINH CÓ ĐỊCH BẮN TRẢ =================
-class InfantryControlView(discord.ui.View):
-
-  def __init__(self, session: InfantrySession):
-    super().__init__(timeout=300)
-    self.session = session
-
-  async def check_user(self, interaction: discord.Interaction) -> bool:
-    if interaction.user != self.session.player:
-      await interaction.response.send_message(
-          "⚠️ Đây không phải trận đấu của bạn!", ephemeral=True
-      )
-      return False
-    return True
-
-  # Hàm xử lý kẻ địch bộ binh bắn trả
-  async def enemy_retaliate(self, channel):
-    if self.session.enemy_hp <= 0 or self.session.hp <= 0:
-      return
-
-    # Tỷ lệ 60% Địch bộ binh phản công
-    if random.random() < 0.6:
-      base_dmg = random.randint(15, 30)
-
-      # Giảm 70% sát thương nếu đang núp công sự
-      if self.session.in_cover:
-        base_dmg = max(3, int(base_dmg * 0.3))
-
-      self.session.hp = max(0, self.session.hp - base_dmg)
-      embed = discord.Embed(
-          title="🔥 ĐỊCH BỘ BINH XẢ SÚNG BẮN TRẢ!",
-          description=(
-              f"💥 Kẻ địch nổ súng đáp trả gây **-{base_dmg}% HP** sát thương"
-              f" {'(Đã giảm nhờ núp công sự)' if self.session.in_cover else ''}!\n"
-              f"❤️ **HP Lính còn lại:** `{self.session.hp}%`"
-          ),
-          color=discord.Color.dark_red(),
-      )
-      await channel.send(embed=embed, delete_after=5)
-
-  @discord.ui.button(
-      label="🔫 Bắn Rifle", style=discord.ButtonStyle.primary, row=0
-  )
-  async def fire_rifle(
-      self, interaction: discord.Interaction, button: discord.ui.Button
-  ):
-    if not await self.check_user(interaction):
-      return
-    if self.session.rifle_ammo < 5:
-      return await interaction.response.send_message(
-          "⚠️ Hết đạn Rifle! Hãy bấm Thay Đạn.", ephemeral=True
-      )
-
-    self.session.rifle_ammo -= 5
-    self.session.in_cover = False
-    dmg = random.randint(20, 35)
-    self.session.enemy_hp = max(0, self.session.enemy_hp - dmg)
-
-    embed = discord.Embed(
-        title="🔫 XẢ SÚNG TRƯỜNG (RIFLE)",
-        description=(
-            f"💥 Xả loạt đạn Rifle! Gây **-{dmg}% HP** sát thương.\n"
-            f"🎯 **HP Địch còn:** `{self.session.enemy_hp}%`"
-        ),
-        color=discord.Color.blue(),
-    )
-    await interaction.response.send_message(embed=embed, delete_after=5)
-    await self.enemy_retaliate(interaction.channel)
-
-  @discord.ui.button(
-      label="💥 Super Shotgun", style=discord.ButtonStyle.danger, row=0
-  )
-  async def fire_shotgun(
-      self, interaction: discord.Interaction, button: discord.ui.Button
-  ):
-    if not await self.check_user(interaction):
-      return
-    if self.session.shotgun_ammo < 2:
-      return await interaction.response.send_message(
-          "⚠️ Hết đạn Shotgun!", ephemeral=True
-      )
-
-    self.session.shotgun_ammo -= 2
-    self.session.in_cover = False
-    dmg = random.randint(25, 40)
-    self.session.enemy_hp = max(0, self.session.enemy_hp - dmg)
-
-    embed = discord.Embed(
-        title="💥 SUPER SHOTGUN KHAI HỎA!",
-        description=(
-            f"🔥 Bắn shotgun áp sát gây **-{dmg}% HP** sát thương!\n"
-            f"🎯 **HP Địch còn:** `{self.session.enemy_hp}%`"
-        ),
-        color=discord.Color.red(),
-    )
-    await interaction.response.send_message(embed=embed, delete_after=5)
-    await self.enemy_retaliate(interaction.channel)
-
-  @discord.ui.button(
-      label="🚀 Bắn Rocket (RPG)", style=discord.ButtonStyle.secondary, row=0
-  )
-  async def fire_rocket(
-      self, interaction: discord.Interaction, button: discord.ui.Button
-  ):
-    if not await self.check_user(interaction):
-      return
-    if self.session.rocket_ammo < 1:
-      return await interaction.response.send_message(
-          "⚠️ Hết đạn Rocket!", ephemeral=True
-      )
-
-    self.session.rocket_ammo -= 1
-    self.session.in_cover = False
-    dmg = random.randint(30, 40)
-    self.session.enemy_hp = max(0, self.session.enemy_hp - dmg)
-
-    embed = discord.Embed(
-        title="🚀 ROCKET LAUNCHER",
-        description=(
-            f"🚀 Bắn Rocket nổ tung vị trí địch! Gây **-{dmg}% HP**!\n"
-            f"🎯 **HP Địch còn:** `{self.session.enemy_hp}%`"
-        ),
-        color=discord.Color.dark_gold(),
-    )
-    await interaction.response.send_message(embed=embed, delete_after=5)
-    await self.enemy_retaliate(interaction.channel)
-
-  @discord.ui.button(
-      label="🛡️ Núp Công Sự", style=discord.ButtonStyle.success, row=1
-  )
-  async def take_cover(
-      self, interaction: discord.Interaction, button: discord.ui.Button
-  ):
-    if not await self.check_user(interaction):
-      return
-    self.session.in_cover = True
-    await interaction.response.send_message(
-        "🛡️ Bạn đã núp sau công sự! (Giảm 70% sát thương khi địch bắn trả)",
-        ephemeral=True,
-    )
-
-  @discord.ui.button(
-      label="🔄 Thay Đạn", style=discord.ButtonStyle.secondary, row=1
-  )
-  async def reload(
-      self, interaction: discord.Interaction, button: discord.ui.Button
-  ):
-    if not await self.check_user(interaction):
-      return
-    self.session.rifle_ammo = 30
-    self.session.shotgun_ammo = 8
-    self.session.rocket_ammo = 2
-    await interaction.response.send_message(
-        "🔄 Đã nạp đầy lại toàn bộ băng đạn!", ephemeral=True
-    )
-
-
-# ================= 9. LỆNH BOT =================
-@bot.command(name="Chelps")
-async def chelps_cmd(ctx):
-  embed = discord.Embed(
-      title="📖 HƯỚNG DẪN BOT WAR THUNDER & INFANTRY CO-OP",
-      description=(
-          "• `!tank-coop @LáiXe @PháoThủ [@NạpĐạn]`\n"
-          "• `!heli-coop Nga Ka-50` (Chơi Solo Trực thăng)\n"
-          "• `!heli-coop [Phe] [Heli] @Pilot @Gunner` (Chơi 2 người)\n"
-          "• `!infantry` (Chơi Solo Bộ Binh style Doom / Lost Front)\n"
-          "• `!start` xuất kích xe/trực thăng."
-      ),
-      color=discord.Color.blue(),
-  )
-  await ctx.send(embed=embed)
-
-
-@bot.command(name="tank-coop")
-async def tank_coop_cmd(
-    ctx,
-    m1: discord.Member,
-    m2: discord.Member,
-    m3: discord.Member = None,
-    m4: discord.Member = None,
-):
-  members = [ctx.author, m1, m2] if m3 is None else [ctx.author, m1, m2, m3]
-  mode = 4 if len(members) == 4 else 3
-  coop_sessions[ctx.channel.id] = CoOpSession(members, "tank", mode)
-  await ctx.send("🛡️ **KÍP TANK CO-OP SẴN SÀNG!** Gõ `!start` để xuất kích.")
-
-
-@bot.command(name="heli-coop")
-async def heli_coop_cmd(
-    ctx,
-    faction: str,
-    heli_model: str,
-    m1: discord.Member = None,
-    m2: discord.Member = None,
-):
-  if m1 is None:
-    sub_mode = 1
-    members = [ctx.author]
-  else:
-    sub_mode = 2
-    members = [m1, m2 if m2 else ctx.author]
-
-  coop = CoOpSession(members, "heli", sub_mode, faction, heli_model)
-  coop_sessions[ctx.channel.id] = coop
-  await ctx.send(
-      f"🚁 **TRỰC THĂNG {heli_model.upper()} SẴN SÀNG!** Gõ `!start` để cất"
-      " cánh."
-  )
-
-
-@bot.command(name="infantry")
-async def infantry_cmd(ctx):
-  session = InfantrySession(ctx.author)
-  infantry_sessions[ctx.channel.id] = session
-
-  embed = discord.Embed(
-      title="🪖 BẮT ĐẦU CHẾ ĐỘ BỘ BINH (SINGLE PLAYER)",
-      description=(
-          f"Lính chiến {ctx.author.mention} đã xuất kích!\n"
-          "Dùng các nút bấm bên dưới để chiến đấu, núp công sự và tiêu diệt"
-          " địch.\n\n"
-          + generate_infantry_hud(session)
-      ),
-      color=discord.Color.dark_green(),
-  )
-
-  await ctx.send(embed=embed, view=InfantryControlView(session))
-
-
-@bot.command(name="start")
-async def start_cmd(ctx):
-  if ctx.channel.id not in coop_sessions:
-    return await ctx.send("⚠️ Chưa có phiên đấu! Khởi tạo bằng lệnh trước.")
-
-  coop = coop_sessions[ctx.channel.id]
-
-  if coop.mode_type == "tank":
-    await ctx.send(
-        content=f"👑 **Chỉ huy {coop.commander.mention}:**",
-        embed=discord.Embed(
-            title="👑 [COMMANDER HUD]",
-            description=generate_role_ascii_map(coop, "commander"),
-            color=discord.Color.gold(),
-        ),
-        view=CommanderCaroView(coop),
-    )
-    await ctx.send(
-        content=f"🏎️ **Lái xe {coop.driver.mention}:**",
-        embed=discord.Embed(
-            title="🏎️ [DRIVER HUD]",
-            description=generate_role_ascii_map(coop, "driver"),
-            color=discord.Color.blue(),
-        ),
-        view=DriverControlView(coop),
-    )
-    await ctx.send(
-        content=f"🎯 **Pháo thủ {coop.gunner.mention}:**",
-        embed=discord.Embed(
-            title="🎯 [GUNNER HUD]",
-            description=generate_role_ascii_map(coop, "gunner"),
-            color=discord.Color.red(),
-        ),
-        view=GunnerControlView(coop),
-    )
-    if coop.sub_mode == 4 and coop.loader:
-      await ctx.send(
-          content=f"📦 **Nạp đạn {coop.loader.mention}:**",
-          embed=discord.Embed(
-              title="📦 [LOADER HUD]",
-              description=generate_role_ascii_map(coop, "loader"),
-              color=discord.Color.green(),
-          ),
-          view=LoaderControlView(coop),
-      )
-  else:
-    if coop.sub_mode == 1:
-      role = coop.current_view
-      view = (
-          HeliPilotView(coop) if role == "pilot" else HeliGunnerCommanderView(coop)
-      )
-      await ctx.send(
-          content=f"🚁 **Trực thăng {coop.heli_model} Solo HUD:**",
-          embed=discord.Embed(
-              title=f"🚁 [{role.upper()} VIEW]",
-              description=generate_role_ascii_map(coop, role),
-              color=discord.Color.purple(),
-          ),
-          view=view,
-      )
-    else:
-      await ctx.send(
-          content=f"🛫 **Phi công {coop.pilot.mention}:**",
-          embed=discord.Embed(
-              title="🛫 [PILOT HUD]",
-              description=generate_role_ascii_map(coop, "pilot"),
-              color=discord.Color.green(),
-          ),
-          view=HeliPilotView(coop),
-      )
-      await ctx.send(
-          content=f"🎯 **Xạ thủ {coop.gunner_cmd.mention}:**",
-          embed=discord.Embed(
-              title="🎯 [GUNNER HUD]",
-              description=generate_role_ascii_map(coop, "gunner"),
-              color=discord.Color.orange(),
-          ),
-          view=HeliGunnerCommanderView(coop),
-      )
-
+    """)
+    # Bảng lưu trữ danh mục bất động sản đầu tư của người chơi
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS real_estate (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER,
+            property_name TEXT,
+            purchase_price REAL,
+            current_value REAL,
+            risk_tier TEXT
+        )
+    """)
+    conn.commit()
+    conn.close()
+
+init_db()
+
+def get_player(user_id):
+    conn = sqlite3.connect("game.db")
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT money, debt, ore, steel, weapon_power, defense_power, territory_level, tech_level, daily_transferred 
+        FROM players WHERE user_id = ?
+    """, (user_id,))
+    row = cursor.fetchone()
+    if not row:
+        cursor.execute("""
+            INSERT INTO players (user_id, money, debt, ore, steel, weapon_power, defense_power, territory_level, tech_level) 
+            VALUES (?, 1000.0, 500000.0, 0, 0, 0, 0, 1, 1)
+        """, (user_id,))
+        for r in range(1, GRID_ROWS + 1):
+            for c in GRID_COLS:
+                cursor.execute("INSERT OR IGNORE INTO grid_cells (user_id, cell_id, building_type, connected_to) VALUES (?, ?, 'trong', '')", (user_id, f"{c}{r}"))
+        conn.commit()
+        row = (1000.0, 500000.0, 0, 0, 0, 0, 1, 1, 0.0)
+    conn.close()
+    return {
+        "money": row[0], "debt": row[1], "ore": row[2], "steel": row[3], 
+        "weapon": row[4], "defense": row[5], "territory": row[6], "tech": row[7], "daily_transferred": row[8]
+    }
+
+def update_player(user_id, data):
+    conn = sqlite3.connect("game.db")
+    cursor = conn.cursor()
+    cursor.execute("""
+        UPDATE players 
+        SET money = ?, debt = ?, ore = ?, steel = ?, weapon_power = ?, defense_power = ?, territory_level = ?, tech_level = ?, daily_transferred = ? 
+        WHERE user_id = ?
+    """, (data['money'], data['debt'], data['ore'], data['steel'], data['weapon'], data['defense'], data['territory'], data['tech'], data['daily_transferred'], user_id))
+    conn.commit()
+    conn.close()
+
+def get_grid(user_id):
+    conn = sqlite3.connect("game.db")
+    cursor = conn.cursor()
+    cursor.execute("SELECT cell_id, building_type, connected_to FROM grid_cells WHERE user_id = ?", (user_id,))
+    rows = cursor.fetchall()
+    conn.close()
+    return {row[0]: {"type": row[1], "target": row[2]} for row in rows}
+
+def create_vn_image(background_color, speaker_name, dialogue_text):
+    width, height = 800, 450
+    img = Image.new("RGB", (width, height), color=background_color)
+    draw = ImageDraw.Draw(img)
+    draw.rectangle([40, 300, 760, 420], fill=(15, 15, 25), outline=(200, 200, 200), width=2)
+    draw.rectangle([50, 270, 250, 305], fill=(40, 40, 70), outline=(200, 200, 200), width=1)
+    
+    try:
+        font_name = ImageFont.truetype("arial.ttf", 16)
+        font_text = ImageFont.truetype("arial.ttf", 15)
+    except IOError:
+        font_name = ImageFont.load_default()
+        font_text = ImageFont.load_default()
+
+    draw.text((65, 278), speaker_name, fill=(255, 220, 100), font=font_name)
+    lines, current_line = [], ""
+    for word in dialogue_text.split(" "):
+        if len(current_line + " " + word) <= 65:
+            current_line += (" " if current_line else "") + word
+        else:
+            lines.append(current_line)
+            current_line = word
+    if current_line: lines.append(current_line)
+        
+    text_y = 320
+    for line in lines[:4]:
+        draw.text((60, text_y), line, fill=(255, 255, 255), font=font_text)
+        text_y += 22
+
+    bio = io.BytesIO()
+    img.save(bio, "PNG")
+    bio.seek(0)
+    return discord.File(bio, filename="visual_novel.png")
+
+async def get_butler_dialogue(prompt_context):
+    if not gemini_model: return "Thưa cậu chủ, tôi luôn sẵn sàng."
+    try:
+        res = gemini_model.generate_content(f"Bạn là quản gia thực dụng, sắc sảo, hay cà khịa cậu chủ phá sản đang trả nợ 500k$. Trả lời dưới 2 câu bằng tiếng Việt.\nTình huống: {prompt_context}")
+        return res.text.strip()
+    except: return "Thưa cậu chủ, hệ thống liên lạc đang chập chờn."
+
+@tasks.loop(seconds=30)
+async def factory_production_loop():
+    conn = sqlite3.connect("game.db")
+    cursor = conn.cursor()
+    cursor.execute("SELECT user_id FROM players")
+    for u in cursor.fetchall():
+        user_id = u[0]
+        grid = get_grid(user_id)
+        player = get_player(user_id)
+        
+        miners = sum(1 for c in grid.values() if c["type"] == "miner")
+        smelters = sum(1 for c in grid.values() if c["type"] == "smelter" and c["target"] in grid and grid[c["target"]]["type"] == "miner")
+        
+        multiplier = player['tech']
+        added_ore = miners * 4 * multiplier
+        consumed_ore = smelters * 3
+        actual_smelted = min(added_ore, consumed_ore) if smelters > 0 else 0
+        added_steel = int(actual_smelted * 0.8 * multiplier)
+
+        cursor.execute("SELECT ore, steel FROM players WHERE user_id = ?", (user_id,))
+        p = cursor.fetchone()
+        cursor.execute("UPDATE players SET ore = ?, steel = ? WHERE user_id = ?", (max(0, p[0] + added_ore - consumed_ore), p[1] + added_steel, user_id))
+    conn.commit()
+    conn.close()
 
 @bot.event
 async def on_ready():
-  print(f"✅ Bot sẵn sàng: {bot.user.name}")
+    factory_production_loop.start()
+    print(f"Bot Tycoon RealEstate Edition Online: {bot.user}")
 
+@bot.command(name="start_empire")
+async def start_game(ctx):
+    player = get_player(ctx.author.id)
+    diag = await get_butler_dialogue("Cậu chủ nhìn mảnh đất hoang.")
+    embed = discord.Embed(title="🏛️ ĐẾ CHẾ CÔNG NGHIỆP: KHỞI ĐẦU", description=f"*{diag}*\n\n💵 Tiền: `${player['money']:,.2f}` | 💳 Nợ: `${player['debt']:,.2f}`", color=discord.Color.dark_red())
+    await ctx.send(embed=embed)
+
+@bot.command(name="factory")
+async def show_factory(ctx):
+    player = get_player(ctx.author.id)
+    grid = get_grid(user_id=ctx.author.id)
+    board = "```\n" + "      " + "   ".join(GRID_COLS) + "  \n    +----+----+----+----+\n"
+    for r in range(1, GRID_ROWS + 1):
+        line = f"  {r} |"
+        for c in GRID_COLS:
+            t = grid.get(f"{c}{r}", {}).get("type", "trong")
+            sym = " ⛏️ " if t=="miner" else " 🏭 " if t=="smelter" else " 🚚 " if t=="truck" else "    "
+            line += sym + "|"
+        board += line + "\n    +----+----+----+----+\n"
+    board += "```"
+    embed = discord.Embed(title="🗺️ BẢN ĐỒ NHÀ MÁY & LOGISTICS", color=discord.Color.dark_green())
+    embed.add_field(name="Trạng Thái", value=f"💵 Tiền: `${player['money']:,.2f}` | 📦 Quặng: {player['ore']} | 🔩 Thép: {player['steel']}\n🔬 Công nghệ: Cấp {player['tech']} | ⚔️ Sức mạnh: {player['weapon'] + player['defense']}", inline=False)
+    embed.add_field(name="Sơ Đồ (⛏️ Mỏ | 🏭 Lò | 🚚 Xe chở)", value=board, inline=False)
+    embed.set_footer(text="Lệnh: !f_place [miner/smelter/truck] [ô] | !f_connect [đích] [nguồn]")
+    await ctx.send(embed=embed)
+
+@bot.command(name="f_place")
+async def f_place(ctx, b_type: str, cell: str):
+    b_type = b_type.lower()
+    cell = cell.upper()
+    if b_type not in ["miner", "smelter", "truck"]:
+        return await ctx.send("❌ Thiết bị không hợp lệ! Dùng: `miner`, `smelter`, hoặc `truck`.")
+    
+    costs = {"miner": 300, "smelter": 600, "truck": 500}
+    player = get_player(ctx.author.id)
+    cost = costs[b_type]
+    
+    if player['money'] < cost:
+        return await ctx.send(f"❌ Không đủ tiền! Cần `${cost}`.")
+        
+    player['money'] -= cost
+    update_player(ctx.author.id, player)
+
+    conn = sqlite3.connect("game.db")
+    cursor = conn.cursor()
+    cursor.execute("UPDATE grid_cells SET building_type = ? WHERE user_id = ? AND cell_id = ?", (b_type, ctx.author.id, cell))
+    conn.commit()
+    conn.close()
+    await ctx.send(f"✅ Đã đặt `{b_type}` tại ô **{cell}** với giá `${cost}`!")
+
+@bot.command(name="f_remove")
+async def f_remove(ctx, cell: str):
+    cell = cell.upper()
+    conn = sqlite3.connect("game.db")
+    cursor = conn.cursor()
+    cursor.execute("UPDATE grid_cells SET building_type = 'trong', connected_to = '' WHERE user_id = ? AND cell_id = ?", (ctx.author.id, cell))
+    conn.commit()
+    conn.close()
+    await ctx.send(f"🗑️ Đã thu hồi thiết bị tại ô **{cell}**!")
+
+@bot.command(name="f_connect")
+async def f_connect(ctx, target: str, source: str):
+    conn = sqlite3.connect("game.db")
+    cursor = conn.cursor()
+    cursor.execute("UPDATE grid_cells SET connected_to = ? WHERE user_id = ? AND cell_id = ?", (source.upper(), ctx.author.id, target.upper()))
+    conn.commit()
+    conn.close()
+    await ctx.send(f"🔌 Đã nối dây dữ liệu từ **{source.upper()}** sang **{target.upper()}**!")
+
+@bot.command(name="f_sell")
+async def f_sell(ctx, res: str):
+    user_id = ctx.author.id
+    player = get_player(user_id)
+    grid = get_grid(user_id)
+    res = res.lower()
+
+    has_connected_truck = False
+    for cell_id, data in grid.items():
+        if data["type"] == "truck" and data["target"] in grid:
+            has_connected_truck = True
+            break
+
+    if not has_connected_truck:
+        return await ctx.send("❌ Không thể bán hàng! Bạn phải đặt một **Xe chở (truck)** trên lưới và dùng `!f_connect` nối nguồn tài nguyên vào xe chở đó.")
+
+    earned = 0
+    if res in ["quang", "ore"] and player['ore'] > 0:
+        earned, player['ore'] = player['ore'] * 10 * player['tech'], 0
+    elif res in ["thep", "steel"] and player['steel'] > 0:
+        earned, player['steel'] = player['steel'] * 35 * player['tech'], 0
+    else: 
+        return await ctx.send("❌ Kho trống hoặc tài nguyên không hợp lệ (`ore`/`steel`)!")
+
+    player['money'] += earned
+    update_player(user_id, player)
+    await ctx.send(f"🚚 Xe chở đã vận chuyển thành công! Thu về **${earned:,.2f}** tiền mặt!")
+
+# --- HỆ THỐNG ĐẦU TƯ BẤT ĐỘNG SẢN MỚI ---
+@bot.command(name="real_estate", aliases=["bds"])
+async def real_estate_market(ctx):
+    embed = discord.Embed(title="🏢 SÀN GIAO DỊCH BẤT ĐỘNG SẢN & ĐẦU TƯ", color=discord.Color.orange())
+    embed.description = (
+        "Gặp gỡ danh nhân bất động sản để mua các dự án đất đai chiến lược. "
+        "Giá trị bất động sản sẽ biến động ngẫu nhiên hoặc dựa trên tổng tài sản & số ô đất bạn đang sở hữu!\n\n"
+        "🏠 **1. Khu đất vùng ven thành phố**\n"
+        "   - Giá khởi điểm: `$2,000` | Rủi ro: Thấp | Lợi nhuận ổn định\n"
+        "   - Lệnh mua: `!buy_property ven`\n\n"
+        "🏗️ **2. Tổ hợp thương mại trung tâm**\n"
+        "   - Giá khởi điểm: `$8,000` | Rủi ro: Trung bình | Lợi nhuận cao\n"
+        "   - Lệnh mua: `!buy_property trungtam`\n\n"
+        "🌆 **3. Siêu dự án khu đô thị mới**\n"
+        "   - Giá khởi điểm: `$25,000` | Rủi ro: Cao | Siêu lợi nhuận\n"
+        "   - Lệnh mua: `!buy_property do-thi`\n\n"
+        "📋 Xem danh mục đang sở hữu: `!my_properties` | Bán lại: `!sell_property [ID]`"
+    )
+    await ctx.send(embed=embed)
+
+@bot.command(name="buy_property")
+async def buy_property(ctx, prop_type: str):
+    user_id = ctx.author.id
+    player = get_player(user_id)
+    prop_type = prop_type.lower()
+    
+    props_info = {
+        "ven": ("Đất vùng ven thành phố", 2000, "Thấp"),
+        "trungtam": ("Tổ hợp thương mại trung tâm", 8000, "Trung bình"),
+        "do-thi": ("Siêu dự án khu đô thị mới", 25000, "Cao")
+    }
+    
+    if prop_type not in props_info:
+        return await ctx.send("❌ Loại bất động sản không hợp lệ! Chọn: `ven`, `trungtam`, hoặc `do-thi`.")
+        
+    name, price, risk = props_info[prop_type]
+    if player['money'] < price:
+        return await ctx.send(f"❌ Không đủ tiền mua bất động sản này! Cần `${price:,.2f}`.")
+        
+    player['money'] -= price
+    update_player(user_id, player)
+    
+    conn = sqlite3.connect("game.db")
+    cursor = conn.cursor()
+    cursor.execute("""
+        INSERT INTO real_estate (user_id, property_name, purchase_price, current_value, risk_tier)
+        VALUES (?, ?, ?, ?, ?)
+    """, (user_id, name, price, price, risk))
+    conn.commit()
+    conn.close()
+    
+    file = create_vn_image((45, 35, 25), "Đại gia BĐS Arthur", f"Chúc mừng cậu chủ đã sở hữu thành công {name}! Hy vọng thị trường sẽ mỉm cười với khoản đầu tư này.")
+    await ctx.send(file=file)
+
+@bot.command(name="my_properties", aliases=["ds_bds"])
+async def my_properties(ctx):
+    user_id = ctx.author.id
+    conn = sqlite3.connect("game.db")
+    cursor = conn.cursor()
+    cursor.execute("SELECT id, property_name, purchase_price, current_value, risk_tier FROM real_estate WHERE user_id = ?", (user_id,))
+    rows = cursor.fetchall()
+    conn.close()
+    
+    if not rows:
+        return await ctx.send("📁 Bạn chưa sở hữu dự án bất động sản nào! Dùng lệnh `!real_estate` để tham khảo.")
+        
+    embed = discord.Embed(title="📋 DANH MỤC ĐẦU TƯ BẤT ĐỘNG SẢN", color=discord.Color.gold())
+    total_val = 0
+    for row in rows:
+        prop_id, name, p_price, c_val, risk = row
+        # Cập nhật biến động giá ngẫu nhiên mỗi lần xem danh mục kết hợp với tổng tài sản & số ô đất sở hữu
+        player = get_player(user_id)
+        # Hệ số tăng trưởng dựa trên ngẫu nhiên (-10% đến +25%) + thưởng từ cấp lãnh thổ và tài sản
+        factor = random.uniform(0.90, 1.25) + (player['territory'] * 0.02)
+        new_val = round(c_val * factor, 2)
+        
+        # Cập nhật giá trị mới vào db
+        conn = sqlite3.connect("game.db")
+        cur = conn.cursor()
+        cur.execute("UPDATE real_estate SET current_value = ? WHERE id = ?", (new_val, prop_id))
+        conn.commit()
+        conn.close()
+        
+        profit_loss = new_val - p_price
+        color_icon = "📈" if profit_loss >= 0 else "📉"
+        embed.add_field(
+            name=f"ID [{prop_id}] - {name}",
+            value=f"🏷️ Vốn mua: `${p_price:,.2f}`\n💎 Giá hiện tại: `${new_val:,.2f}` ({color_icon} `${profit_loss:+,.2f}`)\n⚡ Rủi ro: {risk}",
+            inline=False
+        )
+        total_val += new_val
+        
+    embed.set_footer(text=f"Tổng giá trị danh mục BĐS: ${total_val:,.2f} | Dùng !sell_property [ID] để chốt lời/cắt lỗ.")
+    await ctx.send(embed=embed)
+
+@bot.command(name="sell_property")
+async def sell_property(ctx, prop_id: int):
+    user_id = ctx.author.id
+    conn = sqlite3.connect("game.db")
+    cursor = conn.cursor()
+    cursor.execute("SELECT property_name, current_value FROM real_estate WHERE id = ? AND user_id = ?", (prop_id, user_id))
+    row = cursor.fetchone()
+    
+    if not row:
+        conn.close()
+        return await ctx.send("❌ Không tìm thấy bất động sản với ID này trong danh mục của bạn!")
+        
+    name, val = row
+    cursor.execute("DELETE FROM real_estate WHERE id = ?", (prop_id,))
+    conn.commit()
+    conn.close()
+    
+    player = get_player(user_id)
+    player['money'] += val
+    update_player(user_id, player)
+    
+    await ctx.send(f"💰 Đã bán thành công **{name}** (ID: {prop_id}) và thu về **${val:,.2f}** tiền mặt!")
+
+@bot.command(name="tech_tree")
+async def show_tech_tree(ctx):
+    player = get_player(ctx.author.id)
+    embed = discord.Embed(title="🔬 CÂY CÔNG NGHỆ QUÂN SỰ - CÔNG NGHIỆP", color=discord.Color.blue())
+    embed.description = (
+        f"Cấp độ nghiên cứu hiện tại: **Cấp {player['tech']}**\n\n"
+        "🚀 **Nâng cấp Công nghệ Cấp 2**\n"
+        "   - Yêu cầu: 50 Thép (Steel) + $5,000\n"
+        "   - Hiệu quả: Tăng 2x hiệu suất sản xuất toàn nhà máy!\n"
+        "   - Lệnh nghiên cứu: `!research`"
+    )
+    await ctx.send(embed=embed)
+
+@bot.command(name="research")
+async def research_tech(ctx):
+    player = get_player(ctx.author.id)
+    if player['tech'] >= 2:
+        return await ctx.send("🔥 Đã đạt cấp độ công nghệ tối đa hiện tại!")
+    
+    cost_money, cost_steel = 5000, 50
+    if player['money'] < cost_money or player['steel'] < cost_steel:
+        return await ctx.send(f"❌ Không đủ nguyên liệu! Cần `${cost_money}` và `{cost_steel} Thép`.")
+
+    player['money'] -= cost_money
+    player['steel'] -= cost_steel
+    player['tech'] += 1
+    update_player(ctx.author.id, player)
+    await ctx.send("🎉 Nghiên cứu thành công! Đế chế của bạn đã bước vào kỷ nguyên công nghệ Cấp 2!")
+
+@bot.command(name="pay_debt")
+async def pay_debt(ctx, amount: float):
+    player = get_player(ctx.author.id)
+    if player['money'] < amount: return await ctx.send("❌ Không đủ tiền mặt!")
+    actual = min(amount, player['debt'])
+    player['money'] -= actual
+    player['debt'] -= actual
+    update_player(ctx.author.id, player)
+    await ctx.send(f"✅ Đã trả bớt `${actual:,.2f}` tiền nợ. Còn lại: `${player['debt']:,.2f}`.")
+
+@bot.command(name="shop")
+async def shop(ctx):
+    player = get_player(ctx.author.id)
+    embed = discord.Embed(title="🛒 CỬA HÀNG QUÂN SỰ", description="!buy_item sungluc ($1500) | !buy_item giap ($2500) | !buy_item thapphao ($6000)", color=discord.Color.gold())
+    embed.add_field(name="Chỉ số", value=f"⚔️ Sức mạnh: {player['weapon']} | 🛡️ Giáp: {player['defense']}", inline=False)
+    await ctx.send(embed=embed)
+
+@bot.command(name="buy_item")
+async def buy_item(ctx, code: str):
+    player, code = get_player(ctx.author.id), code.lower()
+    cost, w, d, name = (1500, 10, 0, "Súng lục") if code=="sungluc" else (2500, 0, 15, "Áo giáp") if code=="giap" else (6000, 25, 15, "Tháp pháo") if code=="thapphao" else (0,0,0,"")
+    if not cost or player['money'] < cost: return await ctx.send("❌ Không đủ tiền hoặc sai mã vật phẩm!")
+    player['money'] -= cost
+    player['weapon'] += w
+    player['defense'] += d
+    update_player(ctx.author.id, player)
+    file = create_vn_image((30, 45, 30), "Quản gia Alfred", f"Đã trang bị {name}! Sẵn sàng chiến đấu.")
+    await ctx.send(file=file)
+
+@bot.command(name="transfer")
+async def transfer_money(ctx, member: discord.Member, amount: float):
+    sender_id = ctx.author.id
+    if sender_id == member.id: return await ctx.send("❌ Không thể chuyển tiền cho chính mình!")
+    if amount <= 0: return await ctx.send("❌ Số tiền không hợp lệ!")
+    
+    sender = get_player(sender_id)
+    if sender['daily_transferred'] + amount > 5000:
+        remaining = 5000 - sender['daily_transferred']
+        return await ctx.send(f"⚠️ Vượt hạn mức chuyển tiền trong ngày! Bạn chỉ còn có thể chuyển tối đa `${max(0, remaining)}` nữa hôm nay.")
+
+    if sender['money'] < amount: return await ctx.send("❌ Không đủ tiền mặt trong ví!")
+    
+    receiver = get_player(member.id)
+    sender['money'] -= amount
+    sender['daily_transferred'] += amount
+    receiver['money'] += amount
+    
+    update_player(sender_id, sender)
+    update_player(member.id, receiver)
+    await ctx.send(f"💸 Đã chuyển thành công **${amount:,.2f}** cho {member.mention}! (Đã dùng: `${sender['daily_transferred']}/$5,000` hạn mức ngày)")
+
+@bot.command(name="raid")
+async def raid_player(ctx, member: discord.Member):
+    attacker_id = ctx.author.id
+    if attacker_id == member.id: return await ctx.send("❌ Không thể tự cướp nhà máy của mình!")
+    
+    attacker = get_player(attacker_id)
+    defender = get_player(member.id)
+    
+    att_power = attacker['weapon'] * 2 + attacker['defense']
+    def_power = defender['weapon'] + defender['defense'] * 2
+    
+    if att_power <= 0:
+        return await ctx.send("❌ Quân lực quá yếu! Hãy dùng `!shop` mua súng lục hoặc tháp pháo trước.")
+        
+    if att_power > def_power:
+        loot = min(defender['money'], random.randint(100, 500))
+        defender['money'] -= loot
+        attacker['money'] += loot
+        update_player(attacker_id, attacker)
+        update_player(member.id, defender)
+        await ctx.send(f"⚔️ **ĐỘT KÍCH THÀNH CÔNG!** Cướp được **${loot}** từ {member.mention}!")
+    else:
+        fine = min(attacker['money'], 150)
+        attacker['money'] -= fine
+        update_player(attacker_id, attacker)
+        await ctx.send(f"🛡️ **PHÒNG THỦ THÀNH CÔNG!** {member.mention} đã đánh bật cuộc tập kích. Bị phạt **${fine}**!")
 
 if __name__ == "__main__":
-  keep_alive()
-  bot.run(DISCORD_TOKEN)
+    bot.run(DISCORD_TOKEN)
