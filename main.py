@@ -191,7 +191,7 @@ async def custom_help(ctx):
         description="Bot phát trực tiếp video YouTube vào voice, render khung hình sạch và dịch phụ đề tiếng Việt tự động bằng Gemini.",
         color=discord.Color.from_rgb(120, 198, 122)
     )
-    embed.add_field(name="▶️ `!Vplay [Link_YouTube]`", value="Phát video kèm phụ đề AI tiếng Việt, tự động nghỉ sau mỗi 5 phút.", inline=False)
+    embed.add_field(name="▶️ `!Vplay [Link hoặc Tên Video]`", value="Phát video kèm phụ đề AI tiếng Việt, tự động nghỉ sau mỗi 5 phút.", inline=False)
     await ctx.send(embed=embed)
 
 @bot.command(name="play", aliases=["render", "phat"])
@@ -201,7 +201,7 @@ async def play_asset_video(ctx, *, query: str = None):
         return
 
     if not query:
-        await ctx.send("⚠️ Vui lòng nhập link YouTube. Ví dụ: `!Vplay https://youtu.be/Ms3jexVJfIg`")
+        await ctx.send("⚠️ Vui lòng nhập link hoặc tên video. Ví dụ: `!Vplay Shermans vs Panthers`")
         return
 
     voice_channel = ctx.author.voice.channel
@@ -218,26 +218,35 @@ async def play_asset_video(ctx, *, query: str = None):
     session = {"is_playing": True, "is_paused": False, "stop_flag": False}
     active_sessions[guild_id] = session
 
-    status_msg = await ctx.send(f"🤖 *Đang tải video và dịch phụ đề tiếng Việt bằng AI...*")
+    status_msg = await ctx.send(f"🤖 *Đang tìm kiếm video và dịch phụ đề tiếng Việt bằng AI...*")
 
-    subtitles = get_ai_translated_subtitles(query)
+    # Xử lý thông minh: Nếu không phải link trực tiếp, tự động chuyển thành từ khóa tìm kiếm ytsearch để lách lỗi bot
+    search_target = query if query.startswith("http") else f"ytsearch1:{query}"
 
     target_video_path = None
     is_temp_file = False
 
     try:
-        # Cấu hình yt-dlp vượt lỗi chặn bot YouTube
         ydl_opts = {
             'format': 'best[ext=mp4]/best',
             'noplaylist': True,
             'outtmpl': os.path.join(tempfile.gettempdir(), 'downloaded_video.%(ext)s'),
             'quiet': True,
-            'extractor_args': {'youtube': {'player_client': ['android', 'web']}}
+            'extractor_args': {'youtube': {'player_client': ['android', 'ios', 'web']}}
         }
+        
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(query, download=True)
+            info = ydl.extract_info(search_target, download=True)
+            # Nếu dùng ytsearch, kết quả trả về là list, ta lấy phần tử đầu tiên
+            if 'entries' in info:
+                info = info['entries'][0]
+            
             target_video_path = ydl.prepare_filename(info)
+            real_video_url = info.get('webpage_url', query if query.startswith("http") else f"https://www.youtube.com/watch?v={info.get('id')}")
             is_temp_file = True
+
+        # Lấy sub dựa trên link chuẩn của video tìm được
+        subtitles = get_ai_translated_subtitles(real_video_url)
 
         if ctx.voice_client.is_playing():
             ctx.voice_client.stop()
