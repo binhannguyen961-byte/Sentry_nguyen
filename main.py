@@ -54,7 +54,7 @@ def get_font(size):
     return ImageFont.load_default()
 
 # ==========================================
-# 3. RENDER KHUNG HÌNH TỐI ƯU (CÁCH 2: GIẢM DUNG LƯỢNG)
+# 3. RENDER KHUNG HÌNH TỐI ƯU
 # ==========================================
 def render_clean_video_frame(video_frame_pil, subtitle_text=""):
     try:
@@ -74,7 +74,6 @@ def render_clean_video_frame(video_frame_pil, subtitle_text=""):
                 y_offset += 18
 
         buffer = io.BytesIO()
-        # Giảm quality xuống 55 để file siêu nhẹ, tăng tốc độ gửi mạng tối đa
         canvas.save(buffer, format="JPEG", quality=55, optimize=True)
         buffer.seek(0)
         return buffer
@@ -186,8 +185,8 @@ async def on_ready():
 @bot.command(name="help", aliases=["h"])
 async def custom_help(ctx):
     embed = discord.Embed(
-        title="📱 SubVibe Video Bot - Ultimate Optimized Mode",
-        description="Kết hợp luồng ngầm Queue & Nén dung lượng ảnh siêu tốc.",
+        title="📱 SubVibe Video Bot - 10s Buffer Mode",
+        description="Có tính năng chờ 10 giây tạo lớp buffer khung hình trước khi phát mượt mà.",
         color=discord.Color.from_rgb(255, 0, 80)
     )
     embed.add_field(name="▶️ `!Vplay [Link hoặc Từ khóa]` hoặc Đính kèm file video", value="Thêm video vào hàng đợi phát.", inline=False)
@@ -216,7 +215,7 @@ async def play_next_in_queue(ctx):
     if not session or session["stop_flag"]:
         return
 
-    status_msg = await ctx.send(f"🤖 *Đang tải video: `{current_video['title']}` từ `{current_video['uploader']}`...*")
+    status_msg = await ctx.send(f"🤖 *Đang tải xuống video: `{current_video['title']}`...*")
 
     target_video_path = None
     is_temp_file = False
@@ -246,19 +245,10 @@ async def play_next_in_queue(ctx):
                 target_video_path = ydl.prepare_filename(info)
                 is_temp_file = True
 
-        if ctx.voice_client.is_playing():
-            ctx.voice_client.stop()
-        
-        audio_source = discord.FFmpegPCMAudio(
-            target_video_path, 
-            options='-vn -af "adelay=1750|1750"'
-        )
-        ctx.voice_client.play(audio_source, after=lambda e: asyncio.run_coroutine_threadsafe(play_next_in_queue(ctx), bot.loop))
-
         # ==========================================
-        # CÁCH 1: TẠO LUỒNG NGẦM ĐỌC & RENDER FRAME (QUEUE)
+        # KÍCH HOẠT LUỒNG NGẦM TẠO CÁC LỚP BUFFER (10 GIÂY)
         # ==========================================
-        frame_queue = queue.Queue(maxsize=15)
+        frame_queue = queue.Queue(maxsize=40)
         stop_thread_flag = threading.Event()
 
         def frame_worker(video_path, title_text):
@@ -267,7 +257,7 @@ async def play_next_in_queue(ctx):
             if not fps or fps <= 0 or fps > 60:
                 fps = 30.0
             
-            target_fps = 4.0  # Đặt tốc độ khung hình mục tiêu là ~4 FPS để tối ưu mượt mà và không nghẽn
+            target_fps = 4.0  # Tốc độ khung hình ~4 FPS
             frame_interval = max(1, int(fps / target_fps))
             
             f_count = 0
@@ -282,27 +272,36 @@ async def play_next_in_queue(ctx):
                         pil_img = Image.fromarray(frame_rgb)
                         img_buf = render_clean_video_frame(pil_img, subtitle_text=f"🎵 {title_text[:40]}")
                         if img_buf:
-                            # Đẩy buffer ảnh vào hàng đợi ngầm
                             if not frame_queue.full():
                                 frame_queue.put(img_buf)
                     except Exception:
                         pass
                 f_count += 1
             cap.release()
-            frame_queue.put(None) # Báo hiệu kết thúc
+            frame_queue.put(None)
 
         worker_thread = threading.Thread(target=frame_worker, args=(target_video_path, current_video['title']))
         worker_thread.daemon = True
         worker_thread.start()
 
+        # THỜI GIAN CHỜ 10 GIÂY ĐỂ TẠO CÁC LỚP KHUNG HÌNH (BUFFER)
+        await status_msg.edit(content=f"⚙️ *Đang tạo các lớp khung hình (Buffer 10s) cho: `{current_video['title']}`...*")
+        await asyncio.sleep(10)
+
+        # Sau khi đã buffer xong, bắt đầu phát âm thanh
+        if ctx.voice_client.is_playing():
+            ctx.voice_client.stop()
+        
+        audio_source = discord.FFmpegPCMAudio(target_video_path)
+        ctx.voice_client.play(audio_source, after=lambda e: asyncio.run_coroutine_threadsafe(play_next_in_queue(ctx), bot.loop))
+
         rendered_message = None
         first_frame = True
         last_update_time = time.time()
 
-        # Vòng lặp chính chỉ chuyên tâm lấy ảnh từ queue và gửi lên Discord
+        # Vòng lặp chính lấy ảnh từ queue đã được buffer sẵn sàng để gửi lên Discord
         while not session["stop_flag"] and ctx.voice_client and ctx.voice_client.is_playing():
             try:
-                # Lấy ảnh từ hàng đợi ngầm với timeout ngắn
                 img_buf = frame_queue.get(timeout=0.2)
                 if img_buf is None:
                     break
@@ -315,7 +314,6 @@ async def play_next_in_queue(ctx):
                     first_frame = False
                     last_update_time = current_time
                 else:
-                    # Giới hạn tốc độ cập nhật ~0.25s / frame để khớp tốc độ mượt mà tối đa
                     if current_time - last_update_time >= 0.22:
                         try:
                             await status_msg.edit(content=f"📱 *Đang phát từ @{current_video['uploader']}*")
