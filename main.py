@@ -18,13 +18,11 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 def get_asset_path(base_filename, is_audio=False):
     extensions = ['.mp3', '.wav', '.ogg'] if is_audio else ['.png', '.jpg', '.jpeg']
     
-    # Kiểm tra trực tiếp trong assets/
     for ext in extensions:
         full_path = os.path.join("assets", base_filename + ext)
         if os.path.exists(full_path):
             return full_path
             
-    # Kiểm tra thêm trong assets/sfx/
     if is_audio:
         for ext in extensions:
             full_path = os.path.join("assets", "sfx", base_filename + ext)
@@ -34,17 +32,18 @@ def get_asset_path(base_filename, is_audio=False):
     return None
 
 # ---------------------------------------------------------
-# KỊCH BẢN MỞ RỘNG (DỪNG LẠI TẠO ĐỘ SÂU & HỒI HỘP)
+# KỊCH BẢN GAME (CÓ CẤU HÌNH BGM & OUT VOICE)
 # ---------------------------------------------------------
 STORY_NODES = {
-    # --- CHƯƠNG 1: ĐÊM LẠNH TẠI THÁP CANH ---
+    # --- CHƯƠNG 1: ĐÊM LẠNH (PHÁT NHẠC NỀN LET GO) ---
     "start": {
         "text": (
             "🌲 **[THÁP CANH TOWER 4 - 02:15 AM]**\n"
             "Mưa tầm tã bên ngoài. Bạn đang ca trực đêm một mình tại khu vực Gracewind Park.\n"
-            "Tiếng gió rít qua khe cửa kính. Đột nhiên, tiếng rè rít chói tai vang lên từ bàn làm việc..."
+            "Tiếng rè rít chói tai vang lên từ bàn làm việc..."
         ),
         "image_key": "background_view",
+        "audio_key": "bgm_letgo",  # PHÁT BGM LET GO BẮT ĐẦU GAME!
         "choices": [
             {"label": "🎙️ Tiến lại bàn làm việc kiểm tra Radio", "next": "radio_static"},
             {"label": "🔍 Rọi đèn pin đọc Sổ nhật ký ca trực", "next": "read_logbook"},
@@ -70,7 +69,7 @@ STORY_NODES = {
         "text": (
             "🗺️ **[BẢN ĐỒ GRACE WIND PARK]**\n"
             "Tháp 4 nằm ở vị trí cao nhất. Phía Tây là Khu cắm trại C-4 (An toàn).\n"
-            "Phía Đông là Hồ Gracewind (Khu vực nguy hiểm). Phía Bắc có Các mỏ đá cũ bị bỏ hoang."
+            "Phía Đông là Hồ Gracewind (Khu vực nguy hiểm)."
         ),
         "image_key": "background_map",
         "choices": [
@@ -82,7 +81,6 @@ STORY_NODES = {
     "radio_static": {
         "text": (
             "📻 **[RADIO BANG BANG TÍCH TẮC]**\n"
-            "*(Tiếng thở dốc hỗn hển hòa lẫn tiếng bước chân giẫm trên lá khô)*\n"
             "\"Alo?! Trạm 4 nghe rõ không?! Tôi là tay leo núi bị lạc... Có cái gì đó... "
             "nó đang bắt chước tiếng hét của tôi từ phía sau! Tôi phải làm gì đây?!\""
         ),
@@ -97,8 +95,8 @@ STORY_NODES = {
     "ask_location": {
         "text": (
             "📻 **[NGƯỜI LEO NÚI]:**\n"
-            "\"Tôi... tôi đang đứng cạnh một vách đá dốc... Hình như mặt hồ chói ánh trăng ở ngay phía dưới! "
-            "Trời ơi! Nó đang tiến lại gần! Nó đi bằng 4 chân nhưng thân hình giống hệt con người!!\""
+            "\"Tôi đang đứng cạnh một vách đá dốc... Hình như mặt hồ chói ánh trăng ở ngay phía dưới! "
+            "Trời ơi! Nó đang tiến lại gần!!\""
         ),
         "image_key": "background_mainview",
         "choices": [
@@ -107,7 +105,7 @@ STORY_NODES = {
         ]
     },
 
-    # --- CHƯƠNG 3: SỰ XUẤT HIỆN CỦA GOATMAN (CÓ TIẾNG HÚ SFX) ---
+    # --- CHƯƠNG 3: RA HỒ (TỰ ĐỘNG TẮT LET GO -> PHÁT GOATMAN HOWL) ---
     "look_balcony": {
         "text": (
             "🌊 **[BAN CÔNG THÁP CANH - HƯỚNG RA HỒ]**\n"
@@ -115,7 +113,7 @@ STORY_NODES = {
             "⚡ *XUẤT HIỆN TIẾNG GẦM XANH MẶT TỪ TRONG RỪNG!*"
         ),
         "image_key": "background_lake",
-        "sfx_key": "goatman_howl",  # PHÁT TIẾNG HÚ TỰ ĐỘNG QUA VOICE CHANNEL!
+        "audio_key": "goatman_howl",  # CHUYỂN SANG TIẾNG HÚ GỐC
         "choices": [
             {"label": "🎙️ Chạy vội vào gào lên Mic: 'NHẢY XUỐNG HỒ NGAY!'", "next": "ending_bad"},
             {"label": "💡 Chạy vào Bật Đèn pha tháp canh chiếu vào quái vật", "next": "turn_on_floodlight"}
@@ -125,12 +123,10 @@ STORY_NODES = {
     "turn_on_floodlight": {
         "text": (
             "🔦 **[ĐÈN PHA THÁP CANH BẬT SÁNG RỰC]**\n"
-            "Cột sáng công suất lớn xé tan màn đêm, chiếu thẳng xuống vùng rừng ven hồ.\n"
-            "Ánh sáng quét qua một sinh vật cao nghều, dị dạng đang gầm lên đớn đau vì chói mắt! "
-            "Nó bỏ chạy xói trần vào sâu trong rừng sâu!"
+            "Cột sáng xé tan màn đêm, chiếu thẳng xuống vùng rừng ven hồ. Sinh vật dị dạng bỏ chạy sâu vào rừng!"
         ),
         "image_key": "background_lake",
-        "sfx_key": "goatman_howl",
+        "audio_key": "goatman_howl",
         "choices": [
             {"label": "🎙️ Báo nạn nhân: 'Đường đã mở, chạy ngay về Khu Cắm Trại!'", "next": "ending_good"},
             {"label": "🎙️ Báo nạn nhân: 'Lại gần Tháp Canh của tôi!'", "next": "ending_bad"}
@@ -138,10 +134,7 @@ STORY_NODES = {
     },
 
     "guide_camp": {
-        "text": (
-            "📻 **[ĐIỀU HƯỚNG TỚI KHU CẮM TRẠI]**\n"
-            "Nạn nhân chạy thục mạng theo sự chỉ dẫn của bạn. Tiếng bước chân quái vật phía sau xa dần..."
-        ),
+        "text": "📻 **[ĐIỀU HƯỚNG TỚI KHU CẮM TRẠI]**\nNạn nhân chạy thục mạng theo sự chỉ dẫn của bạn...",
         "image_key": "background_mainview",
         "choices": [
             {"label": "⏳ Chờ đợi tin báo tiếp theo qua Radio...", "next": "ending_good"}
@@ -149,37 +142,70 @@ STORY_NODES = {
     },
 
     "guide_mines": {
-        "text": (
-            "📻 **[ĐIỀU HƯỚNG VÀO MỎ ĐÁ BỎ HOANG]**\n"
-            "Nạn nhân chui vào hang đá tối om. Tiếng đập cửa hang rần rật vang lên qua bộ đàm...\n"
-            "Tín hiệu bị ngắt đột ngột!"
-        ),
+        "text": "📻 **[ĐIỀU HƯỚNG VÀO MỎ ĐÁ BỎ HOANG]**\nTiếng đập cửa hang rần rật vang lên qua bộ đàm... Tín hiệu bị ngắt đột ngột!",
         "image_key": "background_mainview",
         "choices": [
             {"label": "⏳ Chờ đợi trong vô vọng...", "next": "ending_bad"}
         ]
     },
 
-    # --- CÁC KẾT THÚC (ENDINGS) ---
+    # --- CÁC KẾT THÚC (ENDINGS - TỰ ĐỘNG OUT VOICE CHANNEL) ---
     "ending_good": {
         "text": "🏆 **[GOOD ENDING: CỨU SỐNG NẠN NHÂN]**\nSáng hôm sau, lực lượng cứu hộ đã tìm thấy người leo núi an toàn tại Khu cắm trại.",
         "image_key": "good_ending",
+        "stop_voice": True, # ĐÁNH DẤU OUT VOICE
         "choices": []
     },
     "ending_misanthrope": {
         "text": "👁️ **[MISANTHROPE ENDING: BỎ MẶC]**\nBạn tắt Radio và chùm chăn ngủ. Báo chí sáng hôm sau đưa tin về một vụ mất tích bí ẩn...",
         "image_key": "misanthrope_ending",
+        "stop_voice": True,
         "choices": []
     },
     "ending_bad": {
         "text": "☠️ **[BAD ENDING: KẺ SẮC TỘC]**\nQuyết định sai lầm đã khiến quái vật lần theo tiếng Radio và trèo lên tận Tháp Canh của bạn...",
         "image_key": "bad_ending",
+        "stop_voice": True,
         "choices": []
     }
 }
 
 # ---------------------------------------------------------
-# CÁC HÀM UI & XỬ LÝ GAME (GIỮ NGUYÊN LOGIC CHUẨN)
+# XỬ LÝ ÂM THANH & VOICE CHANNEL
+# ---------------------------------------------------------
+async def handle_audio_logic(interaction: discord.Interaction, node: dict):
+    guild = interaction.guild
+    voice_client = guild.voice_client
+
+    # 1. Nếu là CẢNH KẾT THÚC (Ending) -> TẮT ÂM THANH VÀ NGẮT KẾT NỐI VOICE
+    if node.get("stop_voice", False):
+        if voice_client and voice_client.is_connected():
+            if voice_client.is_playing():
+                voice_client.stop()
+            await voice_client.disconnect()
+        return
+
+    # 2. Nếu CẢNH CÓ ÂM THANH (BGM hoặc SFX)
+    audio_key = node.get("audio_key")
+    if audio_key:
+        user = interaction.user
+        if user.voice and user.voice.channel:
+            voice_channel = user.voice.channel
+            
+            if not voice_client:
+                voice_client = await voice_channel.connect()
+            elif voice_client.channel != voice_channel:
+                await voice_client.move_to(voice_channel)
+
+            audio_path = get_asset_path(audio_key, is_audio=True)
+            if audio_path and os.path.exists(audio_path):
+                # Ngắt âm thanh cũ để phát âm thanh mới
+                if voice_client.is_playing():
+                    voice_client.stop()
+                voice_client.play(discord.FFmpegPCMAudio(audio_path))
+
+# ---------------------------------------------------------
+# CÁC HÀM UI & XỬ LÝ CHUYỂN CẢNH
 # ---------------------------------------------------------
 class GameView(discord.ui.View):
     def __init__(self, current_node_key):
@@ -200,27 +226,12 @@ class GameView(discord.ui.View):
             await render_node(interaction, next_node_key)
         return callback
 
-async def handle_sfx(interaction: discord.Interaction, sfx_key: str):
-    user = interaction.user
-    if user.voice and user.voice.channel:
-        voice_channel = user.voice.channel
-        voice_client = interaction.guild.voice_client
-        if not voice_client:
-            voice_client = await voice_channel.connect()
-        elif voice_client.channel != voice_channel:
-            await voice_client.move_to(voice_channel)
-
-        sfx_path = get_asset_path(sfx_key, is_audio=True)
-        if sfx_path and os.path.exists(sfx_path):
-            if voice_client.is_playing():
-                voice_client.stop()
-            voice_client.play(discord.FFmpegPCMAudio(sfx_path))
-
 async def render_node(interaction: discord.Interaction, node_key: str):
     node = STORY_NODES[node_key]
     
-    if "sfx_key" in node and interaction:
-        asyncio.create_task(handle_sfx(interaction, node["sfx_key"]))
+    # Xử lý âm thanh và kết nối Voice
+    if interaction:
+        asyncio.create_task(handle_audio_logic(interaction, node))
 
     view = GameView(node_key)
     image_key = node.get("image_key")
@@ -250,6 +261,14 @@ async def start_game(ctx):
     node = STORY_NODES["start"]
     view = GameView("start")
     
+    # Nếu người gõ lệnh đang ở Voice Channel thì mời bot vào luôn
+    if ctx.author.voice and ctx.author.voice.channel:
+        voice_channel = ctx.author.voice.channel
+        voice_client = await voice_channel.connect()
+        bgm_path = get_asset_path("bgm_letgo", is_audio=True)
+        if bgm_path:
+            voice_client.play(discord.FFmpegPCMAudio(bgm_path))
+
     image_key = node.get("image_key")
     file_path = get_asset_path(image_key, is_audio=False) if image_key else None
     
@@ -266,7 +285,7 @@ async def start_game(ctx):
 
 @bot.event
 async def on_ready():
-    print(f"🤖 Bot {bot.user.name} đã sẵn sàng với kịch bản mở rộng!")
+    print(f"🤖 Bot {bot.user.name} đã sẵn sàng với BGM 'Let Go' và tính năng Auto-Disconnect Voice!")
 
 if __name__ == "__main__":
     bot.run(TOKEN)
