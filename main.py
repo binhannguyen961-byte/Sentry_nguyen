@@ -1,523 +1,330 @@
 import os
 import random
-import time
+import asyncio
+import threading
+import io
+import textwrap
+import cv2
 import discord
 from discord.ext import commands
+from PIL import Image, ImageDraw, ImageFont
+from flask import Flask
 
-# --------------------------------------------------
-# 1. KHỞI TẠO BOT & CƠ SỞ DỮ LIỆU
-# --------------------------------------------------
+# ==========================================
+# 1. WEB SERVER NGẦM (Giữ Bot Online 24/7)
+# ==========================================
+app = Flask(__name__)
+
+@app.route('/')
+def home():
+    return "Monika Video Renderer & Controller Bot is Live!"
+
+def run_flask():
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host='0.0.0.0', port=port)
+
+# ==========================================
+# 2. HÀM HỖ TRỢ TẢI TÀI NGUYÊN (ASSETS)
+# ==========================================
+def load_image_flexible(base_name):
+    extensions = [".png", ".PNG", ".jpg", ".JPG", ".jpeg", ".JPEG"]
+    
+    if base_name == "background":
+        choices = [f"background_{i}" for i in range(1, 6)] + ["background"]
+        random.shuffle(choices)
+        for choice in choices:
+            for ext in extensions:
+                path = os.path.join("assets", choice + ext)
+                if os.path.exists(path):
+                    try:
+                        return Image.open(path).convert("RGBA")
+                    except Exception:
+                        pass
+                        
+    for ext in extensions:
+        path = os.path.join("assets", base_name + ext)
+        if os.path.exists(path):
+            try:
+                return Image.open(path).convert("RGBA")
+            except Exception:
+                pass
+    return None
+
+def get_font(size):
+    for font_name in ["font_regular.ttf", "arial.ttf", "DejaVuSans.ttf", "Roboto-Regular.ttf"]:
+        font_path = os.path.join("assets", font_name)
+        if os.path.exists(font_path):
+            try:
+                return ImageFont.truetype(font_path, size)
+            except Exception:
+                pass
+    return ImageFont.load_default()
+
+# ==========================================
+# 3. RENDER KHUNG HÌNH VIDEO KÈM GIAO DIỆN
+# ==========================================
+def render_video_frame(video_frame_pil, subtitle_text=""):
+    try:
+        bg = load_image_flexible("background")
+        if bg:
+            bg = bg.resize((1000, 600))
+        else:
+            bg = Image.new("RGBA", (1000, 600), (40, 25, 45, 255))
+
+        vid_resized = video_frame_pil.resize((420, 240)).convert("RGBA")
+        bg.paste(vid_resized, (35, 80))
+
+        chibi = load_image_flexible("monika_happy")
+        if not chibi:
+            chibi = load_image_flexible("monika_happy")
+        if chibi:
+            chibi = chibi.resize((380, 480))
+            bg.paste(chibi, (310, 120), chibi)
+
+        draw = ImageDraw.Draw(bg)
+        
+        textbox = load_image_flexible("textbox")
+        if textbox:
+            textbox = textbox.resize((960, 160))
+            bg.paste(textbox, (20, 420), textbox)
+        else:
+            draw.rectangle([(30, 410), (970, 570)], fill=(15, 15, 25, 220), outline=(255, 180, 200), width=2)
+
+        font_name = get_font(21)
+        font_text = get_font(18)
+        draw.text((60, 423), "Monika", fill=(255, 200, 220), font=font_name)
+
+        wrapped_lines = textwrap.wrap(subtitle_text, width=46)
+        y_offset = 452
+        for line in wrapped_lines[:4]:
+            draw.text((60, y_offset), line, fill=(255, 255, 255), font=font_text)
+            y_offset += 25
+
+        buffer = io.BytesIO()
+        bg.save(buffer, format="PNG")
+        buffer.seek(0)
+        return buffer
+    except Exception as e:
+        print(f"Lỗi Render Frame: {e}")
+        return None
+
+# ==========================================
+# 4. QUẢN LÝ PHÁT VIDEO VÀ TRẠNG THÁI SESSION
+# ==========================================
+active_sessions = {} # Lưu trạng thái session theo guild_id
+
+class VideoControlView(discord.ui.View):
+    def __init__(self, guild_id):
+        super().__init__(timeout=None)
+        self.guild_id = guild_id
+
+    @discord.ui.button(label="⏸️ Tạm Dừng", style=discord.ButtonStyle.secondary, custom_id="btn_pause")
+    async def pause_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        session = active_sessions.get(self.guild_id)
+        if session and session["is_playing"]:
+            session["is_paused"] = True
+            if interaction.guild.voice_client and interaction.guild.voice_client.is_playing():
+                interaction.guild.voice_client.pause()
+            await interaction.response.send_message("⏸️ Đã tạm dừng phát video/âm thanh.", ephemeral=True)
+        else:
+            await interaction.response.send_message("⚠️ Không có video nào đang chạy.", ephemeral=True)
+
+    @discord.ui.button(label="▶️ Tiếp Tục", style=discord.ButtonStyle.success, custom_id="btn_resume")
+    async def resume_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        session = active_sessions.get(self.guild_id)
+        if session and session["is_playing"]:
+            session["is_paused"] = False
+            if interaction.guild.voice_client and interaction.guild.voice_client.is_paused():
+                interaction.guild.voice_client.resume()
+            await interaction.response.send_message("▶️ Tiếp tục phát video/âm thanh.", ephemeral=True)
+        else:
+            await interaction.response.send_message("⚠️ Video không ở trạng thái tạm dừng.", ephemeral=True)
+
+    @discord.ui.button(label="⏹️ Dừng Hoàn Toàn", style=discord.ButtonStyle.danger, custom_id="btn_stop")
+    async def stop_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        session = active_sessions.get(self.guild_id)
+        if session:
+            session["stop_flag"] = True
+            if interaction.guild.voice_client:
+                if interaction.guild.voice_client.is_playing() or interaction.guild.voice_client.is_paused():
+                    interaction.guild.voice_client.stop()
+                await interaction.guild.voice_client.disconnect()
+            await interaction.response.send_message("⏹️ Đã dừng hoàn toàn và thoát kênh thoại.", ephemeral=True)
+        else:
+            await interaction.response.send_message("⚠️ Không có tiến trình nào đang chạy.", ephemeral=True)
+
+# ==========================================
+# 5. DISCORD BOT COMMANDS
+# ==========================================
 intents = discord.Intents.default()
 intents.message_content = True
+intents.voice_states = True
 
-bot = commands.Bot(command_prefix="!", intents=intents)
+bot = commands.Bot(command_prefix=["!V", "!v"], intents=intents, help_command=None)
 
-# Database lưu dữ liệu người chơi
-player_data = {}
-
-
-def get_player(user_id):
-  if user_id not in player_data:
-    player_data[user_id] = {
-        "step": 1,
-        "balance": 5000,
-        "lands": [],  # Công nghiệp dân sự: nhamay, trangtrai
-        "military_factories": 0,  # Nhà máy quốc phòng
-        "tech_level": 1,  # Cấp độ công nghệ quân sự
-        "military": {"tank": 0, "plane": 0, "missile": 0, "ammo": 50},
-        "territories": 1,  # Số vùng đất/lãnh thổ đang cai trị
-        "inventory": {"grapnel": 1, "batarang": 3, "sat": 10, "nongsan": 10},
-        "last_raid": 0,
-        "last_conquer": 0,
-    }
-  return player_data[user_id]
-
-
-# --------------------------------------------------
-# 2. HÀM DÒ FILE ẢNH ALFRED
-# --------------------------------------------------
-def get_alfred_image():
-  possible_filenames = [
-      "alfred.png",
-      "Alfred.png",
-      "alfred.jpg",
-      "Alfred.jpg",
-      "ALFRED.PNG",
-      "ALFRED.JPG",
-  ]
-  for name in possible_filenames:
-    if os.path.exists(name):
-      return name
-  return None
-
-
-# --------------------------------------------------
-# 3. GIAO DIỆN NÚT BẤM (BUTTON VIEWS)
-# --------------------------------------------------
-class GameStoryView(discord.ui.View):
-
-  def __init__(self):
-    super().__init__(timeout=None)
-
-  @discord.ui.button(
-      label="Tiếp", style=discord.ButtonStyle.primary, emoji="➡️"
-  )
-  async def next_button_callback(
-      self, interaction: discord.Interaction, button: discord.ui.Button
-  ):
-    p = get_player(interaction.user.id)
-    p["step"] += 1
-
-    if p["step"] == 2:
-      new_dialogue = (
-          "Chiến tranh toàn cầu đã nổ ra! Ngài cần xây dựng Nhà máy Quốc phòng"
-          " (`!buildmil`) và nghiên cứu công nghệ (`!research`)."
-      )
-    elif p["step"] == 3:
-      new_dialogue = (
-          "Hãy sản xuất Xe tăng, Máy bay (`!produce`) và tiến hành chinh phục"
-          " các lãnh thổ mới (`!conquer`) ngay hôm nay!"
-      )
-    else:
-      new_dialogue = (
-          f"Ngài đang ở giai đoạn kịch bản thứ {p['step']}.\nHãy gõ `!help` để"
-          " xem lại toàn bộ hệ thống lệnh quân sự."
-      )
-
-    embed = interaction.message.embeds[0]
-    embed.description = new_dialogue
-    await interaction.response.edit_message(embed=embed, view=self)
-
-
-class TradeView(discord.ui.View):
-
-  def __init__(self, sender, target, item, amount, price):
-    super().__init__(timeout=60)
-    self.sender = sender
-    self.target = target
-    self.item = item
-    self.amount = amount
-    self.price = price
-
-  @discord.ui.button(
-      label="Xác nhận giao dịch", style=discord.ButtonStyle.success, emoji="✅"
-  )
-  async def accept(
-      self, interaction: discord.Interaction, button: discord.ui.Button
-  ):
-    if interaction.user.id != self.target.id:
-      return await interaction.response.send_message(
-          "Đây không phải lời mời cho bạn!", ephemeral=True
-      )
-
-    p_sender = get_player(self.sender.id)
-    p_target = get_player(self.target.id)
-
-    if p_sender["inventory"].get(self.item, 0) < self.amount:
-      return await interaction.response.send_message(
-          "Người bán không còn đủ hàng!", ephemeral=True
-      )
-    if p_target["balance"] < self.price:
-      return await interaction.response.send_message(
-          "Bạn không đủ tiền!", ephemeral=True
-      )
-
-    p_sender["inventory"][self.item] -= self.amount
-    p_target["inventory"][self.item] = (
-        p_target["inventory"].get(self.item, 0) + self.amount
-    )
-    p_target["balance"] -= self.price
-    p_sender["balance"] += self.price
-
-    await interaction.response.edit_message(
-        content=(
-            f"✅ **Giao dịch thành công!** {self.target.mention} đã mua"
-            f" {self.amount}x `{self.item}` từ {self.sender.mention} với giá"
-            f" **${self.price:,}**."
-        ),
-        view=None,
-    )
-
-
-# --------------------------------------------------
-# 4. CÂY CÔNG NGHIỆP QUÂN SỰ (MILITARY-INDUSTRIAL COMPLEX)
-# --------------------------------------------------
-@bot.command(name="buildmil")
-async def buildmil(ctx):
-  p = get_player(ctx.author.id)
-  cost = (p["military_factories"] + 1) * 3000
-
-  if p["balance"] < cost:
-    return await ctx.send(
-        f"❌ Ngài cần **${cost:,}** để xây Nhà máy Quốc phòng tiếp theo!"
-    )
-
-  p["balance"] -= cost
-  p["military_factories"] += 1
-  await ctx.send(
-      f"🏭 **Thành công!** Ngài vừa xây dựng 1 **Nhà máy Quốc phòng** (Tổng"
-      f" cộng: {p['military_factories']})."
-  )
-
-
-@bot.command(name="research")
-async def research(ctx):
-  p = get_player(ctx.author.id)
-  cost = p["tech_level"] * 5000
-
-  if p["balance"] < cost:
-    return await ctx.send(
-        f"❌ Ngài cần **${cost:,}** để nâng cấp Công nghệ Quân sự lên Cấp"
-        f" {p['tech_level'] + 1}!"
-    )
-
-  p["balance"] -= cost
-  p["tech_level"] += 1
-  await ctx.send(
-      f"🔬 **Nghiên cứu hoàn tất!** Công nghệ Quân sự của ngài đã đạt **Cấp"
-      f" {p['tech_level']}**!"
-  )
-
-
-@bot.command(name="produce")
-async def produce(ctx, unit: str = None, amount: int = 1):
-  p = get_player(ctx.author.id)
-  recipes = {
-      "tank": {"sat": 5, "cost": 1000, "tech": 1},
-      "plane": {"sat": 10, "cost": 2500, "tech": 2},
-      "missile": {"sat": 15, "cost": 5000, "tech": 3},
-      "ammo": {"sat": 1, "cost": 100, "tech": 1},
-  }
-
-  if not unit or unit.lower() not in recipes or amount <= 0:
-    return await ctx.send(
-        "❌ **Cú pháp:** `!produce <tank|plane|missile|ammo> <số_lượng>`\n•"
-        " `tank`: 5 Sắt, $1,000 (Tech 1)\n• `plane`: 10 Sắt, $2,500 (Tech 2)\n•"
-        " `missile`: 15 Sắt, $5,000 (Tech 3)\n• `ammo`: 1 Sắt, $100 (Đạn)"
-    )
-
-  unit = unit.lower()
-  req = recipes[unit]
-
-  if p["tech_level"] < req["tech"]:
-    return await ctx.send(
-        f"❌ Ngài cần Công nghệ Quân sự **Cấp {req['tech']}** để sản xuất"
-        f" {unit.upper()}!"
-    )
-  if p["military_factories"] < 1:
-    return await ctx.send(
-        "❌ Ngài cần có ít nhất 1 **Nhà máy Quốc phòng** (`!buildmil`)!"
-    )
-
-  total_sat = req["sat"] * amount
-  total_cost = req["cost"] * amount
-
-  if p["inventory"].get("sat", 0) < total_sat:
-    return await ctx.send(
-        f"❌ Không đủ Sắt! Ngài cần {total_sat} Sắt để chế tạo."
-    )
-  if p["balance"] < total_cost:
-    return await ctx.send(
-        f"❌ Không đủ ngân sách! Ngài cần **${total_cost:,}**."
-    )
-
-  p["inventory"]["sat"] -= total_sat
-  p["balance"] -= total_cost
-  p["military"][unit] += amount
-
-  await ctx.send(
-      f"🪖 **Sản xuất hoàn tất!** +{amount}x `{unit.upper()}` đã được thêm vào"
-      " kho vũ khí."
-  )
-
-
-# --------------------------------------------------
-# 5. CƠ CHẾ CHIẾN ĐẤU XÂM CHIẾM (CONQUER THE WORLD)
-# --------------------------------------------------
-def calculate_power(p):
-  # Công thức tính sức mạnh: Tank=100, Plane=250, Missile=500, Nhân với Tech Level
-  m = p["military"]
-  raw_power = (
-      (m["tank"] * 100) + (m["plane"] * 250) + (m["missile"] * 500)
-  ) * p["tech_level"]
-  return raw_power
-
-
-@bot.command(name="conquer")
-async def conquer(ctx, target: discord.Member = None):
-  p_attacker = get_player(ctx.author.id)
-
-  now = time.time()
-  if now - p_attacker["last_conquer"] < 600:  # 10 phút hồi chiêu
-    wait = int(600 - (now - p_attacker["last_conquer"]))
-    return await ctx.send(
-        f"⏳ Quân đội đang sắp xếp lại đội hình! Hãy chờ {wait}s nữa để phát"
-        " động chiến dịch mới."
-    )
-
-  attacker_power = calculate_power(p_attacker)
-  if attacker_power <= 0:
-    return await ctx.send(
-        "❌ Ngài không có lực lượng quân sự! Hãy dùng `!produce` để sản xuất"
-        " Xe tăng/Máy bay."
-    )
-
-  if p_attacker["military"]["ammo"] < 10:
-    return await ctx.send(
-        "❌ Quân đội thiếu đạn dược! Ngài cần ít nhất 10 Đạn (`!produce ammo`)"
-        " để tiến công."
-    )
-
-  p_attacker["military"]["ammo"] -= 10
-  p_attacker["last_conquer"] = now
-
-  # Truong hop 1: Danh NPC mở rộng lãnh thổ
-  if not target or target.id == ctx.author.id:
-    npc_power = p_attacker["territories"] * 300
-    win_chance = attacker_power / (attacker_power + npc_power)
-
-    if random.random() < win_chance:
-      p_attacker["territories"] += 1
-      stolen_cash = p_attacker["territories"] * 1000
-      p_attacker["balance"] += stolen_cash
-      await ctx.send(
-          "🌍 **CHIẾN THẮNG RỰC RỠ!** Ngài đã xâm chiếm thành công 1 Lãnh thổ"
-          f" mới! (Tổng: {p_attacker['territories']} vùng đất, Chiếm đoạt:"
-          f" **${stolen_cash:,}**)"
-      )
-    else:
-      # Tổn thất 20% Tank
-      lost_tanks = int(p_attacker["military"]["tank"] * 0.2)
-      p_attacker["military"]["tank"] -= lost_tanks
-      await ctx.send(
-          "💥 **CHIẾN DỊCH THẤT BẠI!** Lực lượng phòng thủ vùng đất quá mạnh."
-          f" Ngài mất {lost_tanks} Xe tăng trong trận chiến."
-      )
-
-  # Truong hop 2: Đánh người chơi khác
-  else:
-    p_defender = get_player(target.id)
-    defender_power = calculate_power(p_defender) + (
-        p_defender["territories"] * 200
-    )
-
-    if attacker_power > defender_power:
-      stolen_land = 1 if p_defender["territories"] > 1 else 0
-      p_defender["territories"] -= stolen_land
-      p_attacker["territories"] += stolen_land
-
-      stolen_cash = int(p_defender["balance"] * 0.25)
-      p_defender["balance"] -= stolen_cash
-      p_attacker["balance"] += stolen_cash
-
-      await ctx.send(
-          f"⚔️ **ĐẠI THẮNG!** Quân đội của {ctx.author.mention} (Sức mạnh:"
-          f" {attacker_power:,}) đã đè bẹp {target.mention} (Sức mạnh:"
-          f" {defender_power:,})!\n• Cướp được **${stolen_cash:,}**\n• Cướp"
-          f" được {stolen_land} Lãnh thổ!"
-      )
-    else:
-      # Phạt giảm sức mạnh
-      p_attacker["military"]["tank"] = int(p_attacker["military"]["tank"] * 0.7)
-      await ctx.send(
-          f"🛡️ **THẤT BẠI TẢN MÁC!** {target.mention} đã phòng thủ kiên"
-          f" cường. {ctx.author.mention} bị thiệt hại 30% lực lượng Xe tăng!"
-      )
-
-
-# --------------------------------------------------
-# 6. KINH TẾ DÂN SỰ & THƯƠNG MẠI
-# --------------------------------------------------
-@bot.command(name="buyland")
-async def buyland(ctx, land_type: str = None):
-  p = get_player(ctx.author.id)
-  prices = {"nhamay": 2000, "trangtrai": 1000}
-
-  if not land_type or land_type.lower() not in prices:
-    return await ctx.send(
-        "❌ **Cú pháp:** `!buyland <nhamay|trangtrai>`\n• `trangtrai`: $1,000\n•"
-        " `nhamay`: $2,000"
-    )
-
-  land_type = land_type.lower()
-  cost = prices[land_type]
-  if p["balance"] < cost:
-    return await ctx.send(f"❌ Bạn cần **${cost:,}**!")
-
-  p["balance"] -= cost
-  p["lands"].append(
-      {"type": land_type, "level": 1, "last_harvest": time.time()}
-  )
-  await ctx.send(f"🏗️ Ngài đã mua 1 `{land_type}`.")
-
-
-@bot.command(name="harvest")
-async def harvest(ctx):
-  p = get_player(ctx.author.id)
-  now = time.time()
-  total_sat, total_nongsan = 0, 0
-
-  for land in p["lands"]:
-    elapsed = now - land["last_harvest"]
-    if elapsed >= 60:
-      cycles = int(elapsed // 60)
-      land["last_harvest"] = now
-      if land["type"] == "nhamay":
-        total_sat += cycles * 5
-      elif land["type"] == "trangtrai":
-        total_nongsan += cycles * 10
-
-  p["inventory"]["sat"] = p["inventory"].get("sat", 0) + total_sat
-  p["inventory"]["nongsan"] = p["inventory"].get("nongsan", 0) + total_nongsan
-  await ctx.send(
-      f"📦 **Thu hoạch:** +{total_sat} Sắt, +{total_nongsan} Nông sản."
-  )
-
-
-@bot.command(name="sell")
-async def sell(ctx, item: str = None, amount: int = 1):
-  p = get_player(ctx.author.id)
-  price_table = {"sat": 50, "nongsan": 20}
-
-  if not item or item.lower() not in price_table or amount <= 0:
-    return await ctx.send("❌ **Cú pháp:** `!sell <sat|nongsan> <số_lượng>`")
-
-  item = item.lower()
-  if p["inventory"].get(item, 0) < amount:
-    return await ctx.send(f"❌ Không đủ {item}!")
-
-  earned = price_table[item] * amount
-  p["inventory"][item] -= amount
-  p["balance"] += earned
-  await ctx.send(f"💰 Đã bán {amount}x `{item}` lấy **${earned:,}**.")
-
-
-@bot.command(name="pay")
-async def pay(ctx, target: discord.Member = None, amount: int = 0):
-  if not target or target.bot or amount <= 0:
-    return await ctx.send("❌ **Cú pháp:** `!pay @NgườiDùng <số_tiền>`")
-  p_sender, p_target = get_player(ctx.author.id), get_player(target.id)
-
-  if p_sender["balance"] < amount:
-    return await ctx.send("❌ Không đủ tiền!")
-
-  p_sender["balance"] -= amount
-  p_target["balance"] += amount
-  await ctx.send(f"💸 Đã chuyển **${amount:,}** cho {target.mention}.")
-
-
-@bot.command(name="trade")
-async def trade(
-    ctx, target: discord.Member = None, item: str = None, amount: int = 1, price: int = 0
-):
-  if not target or target.bot or not item or price <= 0:
-    return await ctx.send(
-        "❌ **Cú pháp:** `!trade @NgườiDùng <vật_phẩm> <số_lượng> <giá>`"
-    )
-  item = item.lower()
-  if get_player(ctx.author.id)["inventory"].get(item, 0) < amount:
-    return await ctx.send(f"❌ Không đủ `{item}`!")
-
-  view = TradeView(ctx.author, target, item, amount, price)
-  await ctx.send(
-      f"🤝 {target.mention}, {ctx.author.mention} muốn bán **{amount}x"
-      f" `{item}`** với giá **${price:,}**.",
-      view=view,
-  )
-
-
-# --------------------------------------------------
-# 7. TRẠNG THÁI & HỆ THỐNG
-# --------------------------------------------------
 @bot.event
 async def on_ready():
-  print(f"✅ Bot đã đăng nhập: {bot.user.name}")
+    print(f"-> Video Control Bot đã online: {bot.user}")
 
+@bot.command(name="help", aliases=["h"])
+async def custom_help(ctx):
+    embed = discord.Embed(
+        title="🎬 Kho Quản Lý Video & Trình Điều Khiển",
+        description="Bot render hình ảnh video ra chat, phát âm thanh vào voice, tự động nghỉ ngơi sau 5 phút và hỗ trợ nút bấm điều khiển thủ công.",
+        color=discord.Color.from_rgb(120, 198, 122)
+    )
+    embed.add_field(name="📁 `!Vlist`", value="Xem danh sách video trong thư mục `assets`.", inline=False)
+    embed.add_field(name="▶️ `!Vplay [tên_file]`", value="Phát video (tự động chia khúc 5 phút + bảng nút điều khiển).", inline=False)
+    await ctx.send(embed=embed)
 
-@bot.command(name="startgame")
-async def startgame(ctx):
-  img_filename = get_alfred_image()
-  p = get_player(ctx.author.id)
-  p["step"] = 1
+@bot.command(name="list", aliases=["files", "danhsach"])
+async def list_assets_videos(ctx):
+    if not os.path.exists("assets"):
+        await ctx.send("⚠️ Thư mục `assets` không tồn tại!")
+        return
+    files = [f for f in os.listdir("assets") if f.lower().endswith(('.mp4', '.mov', '.avi', '.mkv'))]
+    if not files:
+        await ctx.send("📂 Không tìm thấy file video nào trong `assets`.")
+        return
+    file_list_str = "\n".join([f"• `{f}`" for f in files])
+    embed = discord.Embed(title="📁 Danh Sách Video Assets", description=file_list_str, color=discord.Color.from_rgb(120, 198, 122))
+    await ctx.send(embed=embed)
 
-  dialogue_text = (
-      f"Chào mừng ngài đã trở lại hệ thống, {ctx.author.display_name}.\nTình"
-      " hình hiện tại đang rất khẩn cấp, xin hãy chú ý lắng nghe."
-  )
-  embed = discord.Embed(
-      title="🎮 KHỞI ĐẦU TRÒ CHƠI", description=dialogue_text, color=0x2B2D31
-  )
-  embed.add_field(
-      name="📜 Hướng dẫn lệnh quân sự & kinh tế",
-      value=(
-          "• `!buildmil` / `!research` / `!produce` - Công nghiệp quân sự\n•"
-          " `!conquer [@user]` - Xâm chiếm lãnh thổ\n• `!buyland` / `!harvest` /"
-          " `!sell` - Kinh tế dân sự\n• `!status` / `!army` - Kiểm tra thông"
-          " tin"
-      ),
-      inline=False,
-  )
+@bot.command(name="play", aliases=["render", "phat"])
+async def play_asset_video(ctx, *, filename: str = None):
+    if not ctx.author.voice or not ctx.author.voice.channel:
+        await ctx.send("⚠️ Nam cần vào Kênh Thoại trước khi dùng lệnh này!")
+        return
 
-  if img_filename:
-    file = discord.File(img_filename, filename=img_filename)
-    embed.set_image(url=f"attachment://{img_filename}")
-    await ctx.send(file=file, embed=embed, view=GameStoryView())
-  else:
-    await ctx.send(embed=embed, view=GameStoryView())
+    if not filename:
+        await ctx.send("⚠️ Vui lòng nhập tên file video. Ví dụ: `!Vplay spider_man.mp4`")
+        return
 
+    file_path = os.path.join("assets", filename.strip())
+    if not os.path.exists(file_path):
+        all_files = os.listdir("assets") if os.path.exists("assets") else []
+        matches = [f for f in all_files if filename.lower() in f.lower() and f.lower().endswith(('.mp4', '.mov', '.avi', '.mkv'))]
+        if matches:
+            file_path = os.path.join("assets", matches[0])
+            filename = matches[0]
+        else:
+            await ctx.send(f"❌ Không tìm thấy file video `{filename}` trong `assets`!")
+            return
 
-@bot.command(name="army")
-async def army(ctx):
-  p = get_player(ctx.author.id)
-  m = p["military"]
-  power = calculate_power(p)
+    voice_channel = ctx.author.voice.channel
+    try:
+        if ctx.voice_client is not None:
+            await ctx.voice_client.move_to(voice_channel)
+        else:
+            await voice_channel.connect()
+    except Exception as e:
+        await ctx.send(f"❌ Không thể kết nối voice: {e}")
+        return
 
-  embed = discord.Embed(
-      title=f"🪖 ĐỘI HÌNH QUÂN SỰ - {ctx.author.display_name}",
-      color=discord.Color.red(),
-  )
-  embed.add_field(
-      name="⚡ Tổng Sức Mạnh", value=f"**{power:,}** Power", inline=False
-  )
-  embed.add_field(
-      name="🔬 Cấp Công Nghệ", value=f"Cấp {p['tech_level']}", inline=True
-  )
-  embed.add_field(
-      name="🏭 Nhà Máy QP", value=f"{p['military_factories']}", inline=True
-  )
-  embed.add_field(
-      name="🌍 Lãnh Thổ", value=f"{p['territories']} Vùng", inline=True
-  )
-  embed.add_field(
-      name="📦 Lực Lượng",
-      value=(
-          f"• **Xe tăng**: {m['tank']}\n• **Máy bay**: {m['plane']}\n• **Tên"
-          f" lửa**: {m['missile']}\n• **Đạn dược**: {m['ammo']}"
-      ),
-      inline=False,
-  )
-  await ctx.send(embed=embed)
+    # Khởi tạo session cho server này
+    guild_id = ctx.guild.id
+    session = {
+        "is_playing": True,
+        "is_paused": False,
+        "stop_flag": False
+    }
+    active_sessions[guild_id] = session
 
+    status_msg = await ctx.send(
+        f"🎬 *Đang chuẩn bị phát video `{filename}`*\n"
+        f"*(Cơ chế bảo vệ: Tự động nghỉ giải lao sau mỗi 5 phút hoạt động)*",
+        view=VideoControlView(guild_id)
+    )
 
-@bot.command(name="status")
-async def status(ctx):
-  p = get_player(ctx.author.id)
-  embed = discord.Embed(
-      title=f"📊 Trạng Thái - {ctx.author.display_name}",
-      color=discord.Color.blue(),
-  )
-  embed.add_field(name="💰 Ngân sách", value=f"${p['balance']:,}", inline=True)
-  embed.add_field(
-      name="⚡ Sức mạnh", value=f"{calculate_power(p):,}", inline=True
-  )
-  embed.add_field(
-      name="🌍 Lãnh thổ", value=f"{p['territories']}", inline=True
-  )
-  await ctx.send(embed=embed)
+    try:
+        cap = cv2.VideoCapture(file_path)
+        fps = cap.get(cv2.CAP_PROP_FPS)
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        duration = total_frames / fps if fps > 0 else 0
 
+        target_fps = 5.0
+        frame_interval = int(fps / target_fps) if fps > target_fps else 1
+        
+        # Bắt đầu phát âm thanh bằng FFmpeg
+        if ctx.voice_client.is_playing():
+            ctx.voice_client.stop()
+        audio_source = discord.FFmpegPCMAudio(file_path)
+        ctx.voice_client.play(audio_source)
 
-# --------------------------------------------------
-# 8. CHẠY BOT
-# --------------------------------------------------
+        frame_count = 0
+        rendered_message = None
+        five_min_counter = 0.0 # Đếm thời gian thực tế để ngắt nghỉ 5 phút
+
+        while cap.isOpened() and not session["stop_flag"]:
+            # Xử lý nếu bấm Tạm Dừng (Pause)
+            while session["is_paused"] and not session["stop_flag"]:
+                await asyncio.sleep(0.5)
+
+            ret, frame = cap.read()
+            if not ret:
+                break
+
+            if frame_count % frame_interval == 0:
+                frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                pil_img = Image.fromarray(frame_rgb)
+
+                current_sec = int(frame_count / fps) if fps > 0 else 0
+                total_sec = int(duration)
+                sub = f"*Đang phát: {filename} [{current_sec}s / {total_sec}s]*"
+                
+                img_buf = render_video_frame(pil_img, subtitle_text=sub)
+
+                if img_buf:
+                    file = discord.File(fp=img_buf, filename="video_render.png")
+                    if rendered_message is None:
+                        rendered_message = await ctx.send(file=file)
+                    else:
+                        await status_msg.edit(content=f"🎬 *Đang chiếu video: `{filename}` [{current_sec}s / {total_sec}s]*", view=VideoControlView(guild_id))
+                        await rendered_message.edit(attachments=[file])
+
+                # Kiểm tra mốc 5 phút (300 giây) để nghỉ giải lao tự động
+                five_min_counter += (1.0 / target_fps)
+                if five_min_counter >= 300.0:
+                    five_min_counter = 0.0
+                    session["is_paused"] = True
+                    if ctx.voice_client and ctx.voice_client.is_playing():
+                        ctx.voice_client.pause()
+                    
+                    await ctx.send(
+                        "☕ *Đã phát liên tục 5 phút rồi! Monika đề xuất chúng ta nghỉ giải lao 1 phút nhé.*\n"
+                        "*(Bot đang tạm dừng. Nam có thể bấm nút **▶️ Tiếp Tục** bất cứ lúc nào để xem tiếp)*"
+                    )
+                    while session["is_paused"] and not session["stop_flag"]:
+                        await asyncio.sleep(1)
+                    if ctx.voice_client and ctx.voice_client.is_paused():
+                        ctx.voice_client.resume()
+
+            await asyncio.sleep(1.0 / target_fps)
+            frame_count += 1
+
+        cap.release()
+        if ctx.voice_client and ctx.voice_client.is_connected():
+            await ctx.voice_client.disconnect()
+
+        active_sessions.pop(guild_id, None)
+        await ctx.send("✨ *Video đã phát xong hoàn tất!* 💚")
+
+    except Exception as e:
+        active_sessions.pop(guild_id, None)
+        if ctx.voice_client and ctx.voice_client.is_connected():
+            await ctx.voice_client.disconnect()
+        await ctx.send(f"❌ Lỗi xảy ra khi phát video: {e}")
+
+# ==========================================
+# 6. KHỞI CHẠY BOT
+# ==========================================
 if __name__ == "__main__":
-  bot.run("YOUR_BOT_TOKEN_HERE")
+    t_flask = threading.Thread(target=run_flask)
+    t_flask.daemon = True
+    t_flask.start()
+
+    token = os.environ.get("DISCORD_TOKEN")
+    if token:
+        bot.run(token)
+    else:
+        print("Lỗi: Không tìm thấy DISCORD_TOKEN trong Environment Variables!")
