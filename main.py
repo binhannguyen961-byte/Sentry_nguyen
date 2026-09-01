@@ -201,7 +201,7 @@ async def play_asset_video(ctx, *, query: str = None):
         return
 
     if not query:
-        await ctx.send("⚠️ Vui lòng nhập link hoặc tên video. Ví dụ: `!Vplay Shermans vs Panthers`")
+        await ctx.send("⚠️ Vui lòng nhập link hoặc từ khóa tìm kiếm. Ví dụ: `!Vplay Shermans vs Panthers`")
         return
 
     voice_channel = ctx.author.voice.channel
@@ -218,10 +218,10 @@ async def play_asset_video(ctx, *, query: str = None):
     session = {"is_playing": True, "is_paused": False, "stop_flag": False}
     active_sessions[guild_id] = session
 
-    status_msg = await ctx.send(f"🤖 *Đang tìm kiếm video và dịch phụ đề tiếng Việt bằng AI...*")
+    status_msg = await ctx.send(f"🤖 *Đang xử lý và dịch phụ đề tiếng Việt bằng AI...*")
 
-    # Xử lý thông minh: Nếu không phải link trực tiếp, tự động chuyển thành từ khóa tìm kiếm ytsearch để lách lỗi bot
-    search_target = query if query.startswith("http") else f"ytsearch1:{query}"
+    target_search = query if query.startswith("http") else f"ytsearch1:{query}"
+    subtitles = get_ai_translated_subtitles(query if query.startswith("http") else f"https://www.youtube.com/results?search_query={query}")
 
     target_video_path = None
     is_temp_file = False
@@ -232,21 +232,18 @@ async def play_asset_video(ctx, *, query: str = None):
             'noplaylist': True,
             'outtmpl': os.path.join(tempfile.gettempdir(), 'downloaded_video.%(ext)s'),
             'quiet': True,
-            'extractor_args': {'youtube': {'player_client': ['android', 'ios', 'web']}}
+            'extractor_args': {
+                'youtube': {
+                    'player_client': ['web', 'mweb', 'android']
+                }
+            }
         }
-        
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(search_target, download=True)
-            # Nếu dùng ytsearch, kết quả trả về là list, ta lấy phần tử đầu tiên
+            info = ydl.extract_info(target_search, download=True)
             if 'entries' in info:
                 info = info['entries'][0]
-            
             target_video_path = ydl.prepare_filename(info)
-            real_video_url = info.get('webpage_url', query if query.startswith("http") else f"https://www.youtube.com/watch?v={info.get('id')}")
             is_temp_file = True
-
-        # Lấy sub dựa trên link chuẩn của video tìm được
-        subtitles = get_ai_translated_subtitles(real_video_url)
 
         if ctx.voice_client.is_playing():
             ctx.voice_client.stop()
