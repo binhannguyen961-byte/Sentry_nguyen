@@ -183,7 +183,7 @@ async def on_ready():
 async def custom_help(ctx):
     embed = discord.Embed(
         title="📱 SubVibe Video Bot - Phát Video & Autoplay",
-        description="Bot phát video trực tiếp vào voice, hỗ trợ đính kèm file MP4, tìm kiếm từ khóa và tự động nghỉ sau 5 video.",
+        description="Bot phát video trực tiếp vào voice (25 FPS), hỗ trợ đính kèm file MP4, tìm kiếm từ khóa và tự động nghỉ sau 5 video.",
         color=discord.Color.from_rgb(255, 0, 80)
     )
     embed.add_field(name="▶️ `!Vplay [Link hoặc Từ khóa]` hoặc Đính kèm file MP4", value="Thêm video vào hàng đợi phát.", inline=False)
@@ -218,16 +218,23 @@ async def play_next_in_queue(ctx):
     is_temp_file = False
 
     try:
-        ydl_opts = {
-            'format': 'best',
-            'outtmpl': os.path.join(tempfile.gettempdir(), 'video_temp.%(ext)s'),
-            'quiet': True,
-            'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-        }
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(current_video['url'], download=True)
-            target_video_path = ydl.prepare_filename(info)
+        source_url = current_video['url']
+        if "discordapp.com" in source_url or "cdn.discordapp.com" in source_url:
+            import urllib.request
+            target_video_path = os.path.join(tempfile.gettempdir(), f"uploaded_{random.randint(1000,9999)}.mp4")
+            urllib.request.urlretrieve(source_url, target_video_path)
             is_temp_file = True
+        else:
+            ydl_opts = {
+                'format': 'best',
+                'outtmpl': os.path.join(tempfile.gettempdir(), 'video_temp.%(ext)s'),
+                'quiet': True,
+                'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+            }
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(source_url, download=True)
+                target_video_path = ydl.prepare_filename(info)
+                is_temp_file = True
 
         if ctx.voice_client.is_playing():
             ctx.voice_client.stop()
@@ -236,9 +243,13 @@ async def play_next_in_queue(ctx):
         ctx.voice_client.play(audio_source, after=lambda e: asyncio.run_coroutine_threadsafe(play_next_in_queue(ctx), bot.loop))
 
         cap = cv2.VideoCapture(target_video_path)
-        fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
-        target_fps = 5.0
-        frame_interval = int(fps / target_fps) if fps > target_fps else 1
+        fps = cap.get(cv2.CAP_PROP_FPS)
+        if not fps or fps <= 0 or fps > 60:
+            fps = 30.0
+            
+        # Thiết lập tốc độ khung hình mượt mà ở mức 25 FPS
+        target_fps = 25.0
+        frame_interval = max(1, int(fps / target_fps))
         
         frame_count = 0
         rendered_message = None
@@ -260,7 +271,10 @@ async def play_next_in_queue(ctx):
                         rendered_message = await ctx.send(file=file, view=TikTokControlView(guild_id))
                     else:
                         await status_msg.edit(content=f"📱 *Đang phát từ @{current_video['uploader']}*")
-                        await rendered_message.edit(attachments=[file])
+                        try:
+                            await rendered_message.edit(attachments=[file])
+                        except Exception:
+                            pass
 
             await asyncio.sleep(1.0 / target_fps)
             frame_count += 1
@@ -287,7 +301,6 @@ async def play_tiktok(ctx, *, query: str = None):
         await ctx.send("⚠️ Nam cần vào Kênh Thoại trước khi dùng lệnh này!")
         return
 
-    # Kiểm tra xem người dùng có đính kèm file video MP4 (hoặc các định dạng video khác) không
     attachment_url = None
     attachment_title = "Video đính kèm"
     if ctx.message.attachments:
@@ -316,7 +329,6 @@ async def play_tiktok(ctx, *, query: str = None):
         guild_queues[guild_id] = []
 
     if attachment_url:
-        # Nếu có file đính kèm, sử dụng trực tiếp URL của file đó
         video_info = {
             'url': attachment_url,
             'title': attachment_title,
