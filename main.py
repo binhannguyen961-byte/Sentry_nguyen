@@ -52,27 +52,28 @@ def get_font(size):
     return ImageFont.load_default()
 
 # ==========================================
-# 3. RENDER KHUNG HÌNH (Tối ưu tỷ lệ dọc)
+# 3. RENDER KHUNG HÌNH (Tối ưu đồ họa nhẹ, mượt)
 # ==========================================
 def render_clean_video_frame(video_frame_pil, subtitle_text=""):
     try:
-        canvas = Image.new("RGBA", (800, 520), (20, 20, 25, 255))
-        vid_resized = video_frame_pil.resize((292, 520)).convert("RGBA")
-        canvas.paste(vid_resized, (254, 0))
+        # Thu nhỏ khung hình canvas để render cực nhanh và nhẹ máy
+        canvas = Image.new("RGBA", (640, 420), (20, 20, 25, 255))
+        vid_resized = video_frame_pil.resize((236, 420)).convert("RGBA")
+        canvas.paste(vid_resized, (202, 0))
 
         draw = ImageDraw.Draw(canvas)
-        font_sub = get_font(16)
-        wrapped_lines = textwrap.wrap(subtitle_text, width=50)
+        font_sub = get_font(14)
+        wrapped_lines = textwrap.wrap(subtitle_text, width=45)
         
         if wrapped_lines:
-            draw.rectangle([(200, 460), (600, 518)], fill=(10, 10, 15, 210))
-            y_offset = 466
+            draw.rectangle([(150, 370), (490, 418)], fill=(10, 10, 15, 210))
+            y_offset = 375
             for line in wrapped_lines[:2]:
-                draw.text((215, y_offset), line, fill=(255, 255, 255), font=font_sub)
-                y_offset += 22
+                draw.text((160, y_offset), line, fill=(255, 255, 255), font=font_sub)
+                y_offset += 20
 
         buffer = io.BytesIO()
-        canvas.save(buffer, format="PNG")
+        canvas.save(buffer, format="PNG", optimize=True)
         buffer.seek(0)
         return buffer
     except Exception as e:
@@ -183,8 +184,8 @@ async def on_ready():
 @bot.command(name="help", aliases=["h"])
 async def custom_help(ctx):
     embed = discord.Embed(
-        title="📱 SubVibe Video Bot - Phát Video & Autoplay",
-        description="Bot phát video trực tiếp vào voice (15 FPS ổn định), hỗ trợ đính kèm file video, tìm kiếm từ khóa và tự động nghỉ sau 5 video.",
+        title="📱 SubVibe Video Bot - Phát Video Tối Ưu",
+        description="Bot phát video trực tiếp vào voice (Chế độ siêu nhẹ 12 FPS), hỗ trợ file đính kèm và tự động nghỉ sau 5 video.",
         color=discord.Color.from_rgb(255, 0, 80)
     )
     embed.add_field(name="▶️ `!Vplay [Link hoặc Từ khóa]` hoặc Đính kèm file video", value="Thêm video vào hàng đợi phát.", inline=False)
@@ -254,8 +255,8 @@ async def play_next_in_queue(ctx):
         if not fps or fps <= 0 or fps > 60:
             fps = 30.0
             
-        # Thiết lập chuẩn 15 FPS tối ưu hiệu năng và chống quá tải bot
-        target_fps = 15.0
+        # Giảm xuống 12 FPS để bot chạy siêu mượt, nhẹ nhàng và chống quá tải tuyệt đối
+        target_fps = 12.0
         frame_interval = max(1, int(fps / target_fps))
         
         frame_count = 0
@@ -350,7 +351,7 @@ async def play_tiktok(ctx, *, query: str = None):
         await ctx.send("❌ Không thể tìm thấy video phù hợp, vui lòng thử lại!")
         return
 
-guild_queues[guild_id].append(video_info)
+    guild_queues[guild_id].append(video_info)
 
     if guild_id not in active_sessions or not active_sessions[guild_id]["is_playing"]:
         active_sessions[guild_id] = {"is_playing": True, "stop_flag": False}
