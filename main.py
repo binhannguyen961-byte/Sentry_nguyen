@@ -6,6 +6,7 @@ import io
 import textwrap
 import tempfile
 import random
+import urllib.request
 import cv2
 import yt_dlp
 import discord
@@ -183,10 +184,10 @@ async def on_ready():
 async def custom_help(ctx):
     embed = discord.Embed(
         title="📱 SubVibe Video Bot - Phát Video & Autoplay",
-        description="Bot phát video trực tiếp vào voice (25 FPS), hỗ trợ đính kèm file MP4, tìm kiếm từ khóa và tự động nghỉ sau 5 video.",
+        description="Bot phát video trực tiếp vào voice (25 FPS), hỗ trợ đính kèm file video, tìm kiếm từ khóa và tự động nghỉ sau 5 video.",
         color=discord.Color.from_rgb(255, 0, 80)
     )
-    embed.add_field(name="▶️ `!Vplay [Link hoặc Từ khóa]` hoặc Đính kèm file MP4", value="Thêm video vào hàng đợi phát.", inline=False)
+    embed.add_field(name="▶️ `!Vplay [Link hoặc Từ khóa]` hoặc Đính kèm file video", value="Thêm video vào hàng đợi phát.", inline=False)
     await ctx.send(embed=embed)
 
 async def play_next_in_queue(ctx):
@@ -220,9 +221,17 @@ async def play_next_in_queue(ctx):
     try:
         source_url = current_video['url']
         if "discordapp.com" in source_url or "cdn.discordapp.com" in source_url:
-            import urllib.request
-            target_video_path = os.path.join(tempfile.gettempdir(), f"uploaded_{random.randint(1000,9999)}.mp4")
-            urllib.request.urlretrieve(source_url, target_video_path)
+            # Lấy đúng phần mở rộng của file đính kèm (vd: .mov, .mp4,...)
+            ext = os.path.splitext(source_url.split("?")[0])[1] or ".mp4"
+            target_video_path = os.path.join(tempfile.gettempdir(), f"uploaded_{random.randint(1000,9999)}{ext}")
+            
+            # Tải file từ Discord CDN kèm User-Agent để tránh lỗi 403 Forbidden
+            req = urllib.request.Request(
+                source_url,
+                headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
+            )
+            with urllib.request.urlopen(req) as response, open(target_video_path, 'wb') as out_file:
+                out_file.write(response.read())
             is_temp_file = True
         else:
             ydl_opts = {
@@ -247,7 +256,7 @@ async def play_next_in_queue(ctx):
         if not fps or fps <= 0 or fps > 60:
             fps = 30.0
             
-        # Thiết lập tốc độ khung hình mượt mà ở mức 25 FPS
+        # Thiết lập chuẩn 25 FPS cho video mượt mà và khớp tiếng
         target_fps = 25.0
         frame_interval = max(1, int(fps / target_fps))
         
@@ -311,7 +320,7 @@ async def play_tiktok(ctx, *, query: str = None):
                 break
 
     if not query and not attachment_url:
-        await ctx.send("⚠️ Vui lòng nhập từ khóa/link hoặc đính kèm một file video MP4! Ví dụ: `!Vplay ka-52`")
+        await ctx.send("⚠️ Vui lòng nhập từ khóa/link hoặc đính kèm một file video! Ví dụ: `!Vplay ka-52`")
         return
 
     voice_channel = ctx.author.voice.channel
