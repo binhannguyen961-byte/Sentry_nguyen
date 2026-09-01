@@ -6,6 +6,7 @@ import io
 import textwrap
 import tempfile
 import random
+import time
 import urllib.request
 import cv2
 import yt_dlp
@@ -183,8 +184,8 @@ async def on_ready():
 @bot.command(name="help", aliases=["h"])
 async def custom_help(ctx):
     embed = discord.Embed(
-        title="📱 SubVibe Video Bot - Đã Sửa Lỗi Audio & Frame",
-        description="Bot tối ưu hiệu năng cao (20 FPS mượt mà, âm thanh chuẩn xác, trễ 1.75s).",
+        title="📱 SubVibe Video Bot - Khắc Phục Lỗi Đứng Hình",
+        description="Bot tối ưu chống Rate Limit Discord, chạy mượt mà và đồng bộ âm thanh trễ 1.75s.",
         color=discord.Color.from_rgb(255, 0, 80)
     )
     embed.add_field(name="▶️ `!Vplay [Link hoặc Từ khóa]` hoặc Đính kèm file video", value="Thêm video vào hàng đợi phát.", inline=False)
@@ -246,7 +247,6 @@ async def play_next_in_queue(ctx):
         if ctx.voice_client.is_playing():
             ctx.voice_client.stop()
         
-        # SỬA LỖI: Dùng FFmpeg trực tiếp cho file cục bộ với độ trễ âm thanh 1.75s chuẩn xác
         audio_source = discord.FFmpegPCMAudio(
             target_video_path, 
             options='-vn -af "adelay=1750|1750"'
@@ -273,24 +273,29 @@ async def play_next_in_queue(ctx):
                 file = discord.File(fp=img_buf, filename="render.jpg")
                 rendered_message = await ctx.send(file=file, view=TikTokControlView(guild_id))
 
+        last_update_time = time.time()
+
         while cap.isOpened() and not session["stop_flag"] and ctx.voice_client and ctx.voice_client.is_playing():
             ret, frame = cap.read()
             if not ret:
                 break
 
             if frame_count % frame_interval == 0:
-                frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                pil_img = Image.fromarray(frame_rgb)
+                current_time = time.time()
+                # Chống Rate Limit: Cập nhật tin nhắn Discord cách nhau tối thiểu 0.8s để không bị Discord khóa
+                if current_time - last_update_time >= 0.8:
+                    frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                    pil_img = Image.fromarray(frame_rgb)
+                    img_buf = render_clean_video_frame(pil_img, subtitle_text=f"🎵 {current_video['title'][:40]}")
 
-                img_buf = render_clean_video_frame(pil_img, subtitle_text=f"🎵 {current_video['title'][:40]}")
-
-                if img_buf:
-                    file = discord.File(fp=img_buf, filename="render.jpg")
-                    try:
-                        await status_msg.edit(content=f"📱 *Đang phát từ @{current_video['uploader']}*")
-                        await rendered_message.edit(attachments=[file])
-                    except Exception:
-                        pass
+                    if img_buf:
+                        file = discord.File(fp=img_buf, filename="render.jpg")
+                        try:
+                            await status_msg.edit(content=f"📱 *Đang phát từ @{current_video['uploader']}*")
+                            await rendered_message.edit(attachments=[file])
+                            last_update_time = current_time
+                        except Exception:
+                            pass
 
             await asyncio.sleep(1.0 / target_fps)
             frame_count += 1
