@@ -183,8 +183,8 @@ async def on_ready():
 @bot.command(name="help", aliases=["h"])
 async def custom_help(ctx):
     embed = discord.Embed(
-        title="📱 SubVibe Video Bot - Đồng Bộ Hoàn Hảo",
-        description="Bot tối ưu hiệu năng cao (20 FPS mượt mà, âm thanh được trễ lại 1.75s để khớp hình).",
+        title="📱 SubVibe Video Bot - Đã Sửa Lỗi Audio & Frame",
+        description="Bot tối ưu hiệu năng cao (20 FPS mượt mà, âm thanh chuẩn xác, trễ 1.75s).",
         color=discord.Color.from_rgb(255, 0, 80)
     )
     embed.add_field(name="▶️ `!Vplay [Link hoặc Từ khóa]` hoặc Đính kèm file video", value="Thêm video vào hàng đợi phát.", inline=False)
@@ -246,11 +246,10 @@ async def play_next_in_queue(ctx):
         if ctx.voice_client.is_playing():
             ctx.voice_client.stop()
         
-        # Thêm adelay=1750|1750 để làm âm thanh trễ lại đúng 1.75 giây, khớp hoàn toàn với hình ảnh
+        # SỬA LỖI: Dùng FFmpeg trực tiếp cho file cục bộ với độ trễ âm thanh 1.75s chuẩn xác
         audio_source = discord.FFmpegPCMAudio(
             target_video_path, 
-            before_options="-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5",
-            options="-vn -af \"adelay=1750|1750\""
+            options='-vn -af "adelay=1750|1750"'
         )
         ctx.voice_client.play(audio_source, after=lambda e: asyncio.run_coroutine_threadsafe(play_next_in_queue(ctx), bot.loop))
 
