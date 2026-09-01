@@ -226,12 +226,13 @@ async def play_asset_video(ctx, *, query: str = None):
     is_temp_file = False
 
     try:
-        # Cấu hình yt-dlp tối ưu tương thích hoàn toàn
+        # Cấu hình yt-dlp vượt lỗi chặn bot YouTube
         ydl_opts = {
             'format': 'best[ext=mp4]/best',
             'noplaylist': True,
             'outtmpl': os.path.join(tempfile.gettempdir(), 'downloaded_video.%(ext)s'),
-            'quiet': True
+            'quiet': True,
+            'extractor_args': {'youtube': {'player_client': ['android', 'web']}}
         }
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(query, download=True)
