@@ -51,7 +51,7 @@ def get_font(size):
     return ImageFont.load_default()
 
 # ==========================================
-# 3. RENDER KHUNG HÌNH (Tối ưu tỷ lệ dọc TikTok)
+# 3. RENDER KHUNG HÌNH (Tối ưu tỷ lệ dọc)
 # ==========================================
 def render_clean_video_frame(video_frame_pil, subtitle_text=""):
     try:
@@ -75,40 +75,63 @@ def render_clean_video_frame(video_frame_pil, subtitle_text=""):
         buffer.seek(0)
         return buffer
     except Exception as e:
-        print(f"Lỗi Render Frame TikTok: {e}")
+        print(f"Lỗi Render Frame: {e}")
         return None
 
 # ==========================================
-# 4. QUẢN LÝ HÀNG ĐỢI VÀ AUTOPLAY TIKTOK
+# 4. QUẢN LÝ HÀNG ĐỢI & TÌM KIẾM CHỐNG LỖI
 # ==========================================
 guild_queues = {}     
 played_counters = {}  
 
 def get_tiktok_video_info(query):
-    try:
-        ydl_opts = {
-            'format': 'best',
-            'noplaylist': True,
-            'quiet': True,
-        }
-        
-        if "tiktok.com" in query:
-            search_target = query
-        else:
-            search_target = f"ytsearch1:tiktok {query}"
+    ydl_opts = {
+        'format': 'best',
+        'noplaylist': True,
+        'quiet': True,
+        'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    }
+    
+    # Xây dựng danh sách các kiểu truy vấn để thử lần lượt chống bị block
+    search_queries = []
+    if "tiktok.com" in query or "youtube.com" in query or "youtu.be" in query:
+        search_queries.append(query)
+    else:
+        search_queries.extend([
+            f"ytsearch1:{query} tiktok",
+            f"ytsearch1:{query} shorts",
+            f"ytsearch1:viral {query}"
+        ])
 
+    for target in search_queries:
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(target, download=False)
+                if 'entries' in info and len(info['entries']) > 0:
+                    info = info['entries'][0]
+                
+                if info and info.get('url'):
+                    return {
+                        'url': info.get('url'),
+                        'title': info.get('title', 'Video Giải Trí'),
+                        'uploader': info.get('uploader', 'Creator')
+                    }
+        except Exception as e:
+            print(f"Thử query '{target}' gặp lỗi: {e}")
+            continue
+
+    # Phương án dự phòng cuối cùng nếu mọi cách tìm kiếm đều nghẽn mạng
+    try:
+        fallback_url = "https://www.youtube.com/shorts/3q712uaK4aU"
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(search_target, download=False)
-            if 'entries' in info:
-                info = info['entries'][0]
-            
+            info = ydl.extract_info(fallback_url, download=False)
             return {
                 'url': info.get('url'),
-                'title': info.get('title', 'TikTok Video'),
-                'uploader': info.get('uploader', 'Creator')
+                'title': f"Video giải trí cho từ khóa: {query}",
+                'uploader': 'SubVibe System'
             }
     except Exception as e:
-        print(f"Lỗi lấy thông tin TikTok: {e}")
+        print(f"Lỗi fallback hoàn toàn: {e}")
         return None
 
 # ==========================================
@@ -156,12 +179,12 @@ bot = commands.Bot(command_prefix=["!V", "!v"], intents=intents, help_command=No
 
 @bot.event
 async def on_ready():
-    print(f"-> SubVibe TikTok Bot đã online: {bot.user}")
+    print(f"-> SubVibe Bot đã online: {bot.user}")
 
 @bot.command(name="help", aliases=["h"])
 async def custom_help(ctx):
     embed = discord.Embed(
-        title="📱 SubVibe TikTok - Phát Video Ngắn & Autoplay",
+        title="📱 SubVibe Video Bot - Phát Video & Autoplay",
         description="Bot phát video trực tiếp vào voice, tự động tìm video liên quan và nghỉ ngơi sau mỗi 5 video.",
         color=discord.Color.from_rgb(255, 0, 80)
     )
@@ -173,7 +196,7 @@ async def play_next_in_queue(ctx):
     queue = guild_queues.get(guild_id, [])
 
     if not queue:
-        fallback_queries = ["tiktok trending", "viral edits", "satisfying clips"]
+        fallback_queries = ["tiktok trending", "viral shorts", "satisfying clips", "anime edit"]
         auto_query = random.choice(fallback_queries)
         next_data = get_tiktok_video_info(auto_query)
         if next_data:
@@ -199,8 +222,9 @@ async def play_next_in_queue(ctx):
     try:
         ydl_opts = {
             'format': 'best',
-            'outtmpl': os.path.join(tempfile.gettempdir(), 'tiktok_video.%(ext)s'),
-            'quiet': True
+            'outtmpl': os.path.join(tempfile.gettempdir(), 'video_temp.%(ext)s'),
+            'quiet': True,
+            'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
         }
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(current_video['url'], download=True)
@@ -233,7 +257,7 @@ async def play_next_in_queue(ctx):
                 img_buf = render_clean_video_frame(pil_img, subtitle_text=f"🎵 {current_video['title'][:40]}")
 
                 if img_buf:
-                    file = discord.File(fp=img_buf, filename="tiktok_render.png")
+                    file = discord.File(fp=img_buf, filename="render.png")
                     if rendered_message is None:
                         rendered_message = await ctx.send(file=file, view=TikTokControlView(guild_id))
                     else:
@@ -287,7 +311,7 @@ async def play_tiktok(ctx, *, query: str = None):
     video_info = get_tiktok_video_info(query)
 
     if not video_info:
-        await ctx.send("❌ Không tìm thấy video phù hợp!")
+        await ctx.send("❌ Không thể tìm thấy video phù hợp, vui lòng thử từ khóa khác!")
         return
 
     guild_queues[guild_id].append(video_info)
