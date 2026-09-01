@@ -21,7 +21,7 @@ app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "AI Subtitle Video Bot is Live!"
+    return "SubVibe AI Subtitle Video Bot is Live!"
 
 def run_flask():
     port = int(os.environ.get("PORT", 10000))
@@ -30,7 +30,6 @@ def run_flask():
 # ==========================================
 # 2. KHỞI TẠO GEMINI CLIENT & HỖ TRỢ FONT
 # ==========================================
-# Tự động lấy API key từ các biến môi trường
 gemini_client = None
 for env_name, env_val in os.environ.items():
     if any(k in env_name.upper() for k in ["GEMINI", "API_KEY", "GOOGLE_KEY"]) and "DISCORD" not in env_name:
@@ -52,30 +51,21 @@ def get_font(size):
     return ImageFont.load_default()
 
 # ==========================================
-# 3. RENDER KHÔNG GIAN SẠCH KÈM PHỤ ĐỀ AI
+# 3. RENDER KHUNG HÌNH SẠCH KÈM PHỤ ĐỀ AI
 # ==========================================
 def render_clean_video_frame(video_frame_pil, subtitle_text=""):
     try:
-        # Khung hình tổng thể gọn gàng (Kích thước 800x520)
-        # Phần trên là video (800x450 - tỷ lệ 16:9), phần dưới là băng thông phụ đề (800x70)
         canvas = Image.new("RGBA", (800, 520), (20, 20, 25, 255))
-
-        # Resize video chuẩn tỉ lệ 16:9
         vid_resized = video_frame_pil.resize((800, 450)).convert("RGBA")
         canvas.paste(vid_resized, (0, 0))
 
         draw = ImageDraw.Draw(canvas)
-
-        # Vẽ thanh nền mờ phía dưới cho phụ đề
         draw.rectangle([(0, 450), (800, 520)], fill=(10, 10, 15, 230))
 
-        # Font chữ phụ đề tiếng Việt
         font_sub = get_font(18)
-        
-        # Tự động ngắt dòng phụ đề nếu quá dài
         wrapped_lines = textwrap.wrap(subtitle_text, width=65)
         y_offset = 462
-        for line in wrapped_lines[:2]: # Tối đa 2 dòng phụ đề
+        for line in wrapped_lines[:2]:
             draw.text((25, y_offset), line, fill=(255, 255, 255), font=font_sub)
             y_offset += 24
 
@@ -95,27 +85,17 @@ def extract_video_id(url):
     return match.group(1) if match else None
 
 def get_ai_translated_subtitles(video_url):
-    """Lấy transcript tiếng Anh từ YouTube và dịch sang tiếng Việt bằng Gemini"""
     try:
         video_id = extract_video_id(video_url)
         if not video_id:
             return []
 
-        # Lấy transcript thô từ YouTube
         transcript_list = YouTubeTranscriptApi.get_transcript(video_id, languages=['en'])
-        
-        # Lọc và gom nhóm các đoạn văn bản ngắn để dịch theo lô (batch) tiết kiệm token
-        subtitles = []
-        texts_to_translate = []
-        
-        for item in transcript_list:
-            texts_to_translate.append(item['text'])
+        texts_to_translate = [item['text'] for item in transcript_list]
 
-        # Nếu có Gemini client, tiến hành dịch toàn bộ nội dung sang tiếng Việt
         translated_texts = texts_to_translate
         if gemini_client and texts_to_translate:
-            # Gộp các câu thành các khối lớn để dịch mượt mà
-            combined_text = "\n---\n".join(texts_to_translate[:150]) # Dịch tối đa 150 câu đầu tiên cho mượt
+            combined_text = "\n---\n".join(texts_to_translate[:150])
             prompt = (
                 "Translate the following English subtitle lines into natural Vietnamese. "
                 "Keep the exact same number of lines separated by '---'. Do not add extra notes:\n\n" + combined_text
@@ -128,7 +108,7 @@ def get_ai_translated_subtitles(video_url):
                 translated_texts = response.text.split('---')
                 translated_texts = [t.strip() for t in translated_texts]
 
-        # Ghép lại thành danh sách phụ đề có chứa mốc thời gian (start, duration, text)
+        subtitles = []
         for i, item in enumerate(transcript_list[:len(translated_texts)]):
             subtitles.append({
                 "start": item['start'],
@@ -202,12 +182,12 @@ bot = commands.Bot(command_prefix=["!V", "!v"], intents=intents, help_command=No
 
 @bot.event
 async def on_ready():
-    print(f"-> AI Subtitle Video Bot đã online: {bot.user}")
+    print(f"-> SubVibe Bot đã online: {bot.user}")
 
 @bot.command(name="help", aliases=["h"])
 async def custom_help(ctx):
     embed = discord.Embed(
-        title="🎬 Trình Phát Video & Phụ Đề AI",
+        title="🎬 SubVibe - Trình Phát Video & Phụ Đề AI",
         description="Bot phát trực tiếp video YouTube vào voice, render khung hình sạch và dịch phụ đề tiếng Việt tự động bằng Gemini.",
         color=discord.Color.from_rgb(120, 198, 122)
     )
@@ -240,15 +220,16 @@ async def play_asset_video(ctx, *, query: str = None):
 
     status_msg = await ctx.send(f"🤖 *Đang tải video và dịch phụ đề tiếng Việt bằng AI...*")
 
-    # Lấy phụ đề AI dịch sẵn trước khi phát
     subtitles = get_ai_translated_subtitles(query)
 
     target_video_path = None
     is_temp_file = False
 
     try:
+        # Cấu hình yt-dlp tối ưu tránh lỗi format không khả dụng
         ydl_opts = {
-            'format': 'best[ext=mp4]/best',
+            'format': 'best',
+            'noplaylist': True,
             'outtmpl': os.path.join(tempfile.gettempdir(), 'downloaded_video.%(ext)s'),
             'quiet': True
         }
@@ -287,8 +268,6 @@ async def play_asset_video(ctx, *, query: str = None):
                 pil_img = Image.fromarray(frame_rgb)
 
                 current_sec = int(frame_count / fps) if fps > 0 else 0
-                
-                # Lấy nội dung phụ đề AI khớp với thời gian hiện tại của video
                 current_sub_text = get_current_subtitle(subtitles, current_sec)
                 if not current_sub_text:
                     current_sub_text = f"Đang phát... [{current_sec}s]"
@@ -303,7 +282,6 @@ async def play_asset_video(ctx, *, query: str = None):
                         await status_msg.edit(content=f"🎬 *Đang chiếu video kèm phụ đề AI [⏱️ {current_sec}s]*", view=VideoControlView(guild_id))
                         await rendered_message.edit(attachments=[file])
 
-                # Mốc nghỉ ngơi tự động sau mỗi 5 phút (300 giây)
                 five_min_counter += (1.0 / target_fps)
                 if five_min_counter >= 300.0:
                     five_min_counter = 0.0
