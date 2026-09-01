@@ -2,6 +2,7 @@ import os
 import re
 import asyncio
 import threading
+import queue
 import io
 import textwrap
 import tempfile
@@ -53,7 +54,7 @@ def get_font(size):
     return ImageFont.load_default()
 
 # ==========================================
-# 3. RENDER KHUNG HÌNH SIÊU TỐC
+# 3. RENDER KHUNG HÌNH TỐI ƯU (CÁCH 2: GIẢM DUNG LƯỢNG)
 # ==========================================
 def render_clean_video_frame(video_frame_pil, subtitle_text=""):
     try:
@@ -73,7 +74,8 @@ def render_clean_video_frame(video_frame_pil, subtitle_text=""):
                 y_offset += 18
 
         buffer = io.BytesIO()
-        canvas.save(buffer, format="JPEG", quality=70, optimize=True)
+        # Giảm quality xuống 55 để file siêu nhẹ, tăng tốc độ gửi mạng tối đa
+        canvas.save(buffer, format="JPEG", quality=55, optimize=True)
         buffer.seek(0)
         return buffer
     except Exception as e:
@@ -184,8 +186,8 @@ async def on_ready():
 @bot.command(name="help", aliases=["h"])
 async def custom_help(ctx):
     embed = discord.Embed(
-        title="📱 SubVibe Video Bot - Khắc Phục Lỗi Đứng Hình",
-        description="Bot tối ưu chống Rate Limit Discord, chạy mượt mà và đồng bộ âm thanh trễ 1.75s.",
+        title="📱 SubVibe Video Bot - Ultimate Optimized Mode",
+        description="Kết hợp luồng ngầm Queue & Nén dung lượng ảnh siêu tốc.",
         color=discord.Color.from_rgb(255, 0, 80)
     )
     embed.add_field(name="▶️ `!Vplay [Link hoặc Từ khóa]` hoặc Đính kèm file video", value="Thêm video vào hàng đợi phát.", inline=False)
@@ -193,23 +195,23 @@ async def custom_help(ctx):
 
 async def play_next_in_queue(ctx):
     guild_id = ctx.guild.id
-    queue = guild_queues.get(guild_id, [])
+    queue_data = guild_queues.get(guild_id, [])
 
-    if not queue:
+    if not queue_data:
         fallback_queries = ["tiktok trending", "viral shorts", "satisfying clips", "anime edit"]
         auto_query = random.choice(fallback_queries)
         next_data = get_tiktok_video_info(auto_query)
         if next_data:
-            queue.append(next_data)
+            queue_data.append(next_data)
 
-    if not queue:
+    if not queue_data:
         await ctx.send("✨ Hàng đợi đã trống. Dùng lệnh `!Vplay` để thêm video tiếp theo nhé! 💚")
         active_sessions.pop(guild_id, None)
         if ctx.voice_client and ctx.voice_client.is_connected():
             await ctx.voice_client.disconnect()
         return
 
-    current_video = queue.pop(0)
+    current_video = queue_data.pop(0)
     session = active_sessions.get(guild_id)
     if not session or session["stop_flag"]:
         return
@@ -253,54 +255,83 @@ async def play_next_in_queue(ctx):
         )
         ctx.voice_client.play(audio_source, after=lambda e: asyncio.run_coroutine_threadsafe(play_next_in_queue(ctx), bot.loop))
 
-        cap = cv2.VideoCapture(target_video_path)
-        fps = cap.get(cv2.CAP_PROP_FPS)
-        if not fps or fps <= 0 or fps > 60:
-            fps = 30.0
+        # ==========================================
+        # CÁCH 1: TẠO LUỒNG NGẦM ĐỌC & RENDER FRAME (QUEUE)
+        # ==========================================
+        frame_queue = queue.Queue(maxsize=15)
+        stop_thread_flag = threading.Event()
+
+        def frame_worker(video_path, title_text):
+            cap = cv2.VideoCapture(video_path)
+            fps = cap.get(cv2.CAP_PROP_FPS)
+            if not fps or fps <= 0 or fps > 60:
+                fps = 30.0
             
-        target_fps = 20.0
-        frame_interval = max(1, int(fps / target_fps))
-        
-        frame_count = 0
+            target_fps = 4.0  # Đặt tốc độ khung hình mục tiêu là ~4 FPS để tối ưu mượt mà và không nghẽn
+            frame_interval = max(1, int(fps / target_fps))
+            
+            f_count = 0
+            while cap.isOpened() and not stop_thread_flag.is_set():
+                ret, frame = cap.read()
+                if not ret:
+                    break
+                
+                if f_count % frame_interval == 0:
+                    try:
+                        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                        pil_img = Image.fromarray(frame_rgb)
+                        img_buf = render_clean_video_frame(pil_img, subtitle_text=f"🎵 {title_text[:40]}")
+                        if img_buf:
+                            # Đẩy buffer ảnh vào hàng đợi ngầm
+                            if not frame_queue.full():
+                                frame_queue.put(img_buf)
+                    except Exception:
+                        pass
+                f_count += 1
+            cap.release()
+            frame_queue.put(None) # Báo hiệu kết thúc
+
+        worker_thread = threading.Thread(target=frame_worker, args=(target_video_path, current_video['title']))
+        worker_thread.daemon = True
+        worker_thread.start()
+
         rendered_message = None
-
-        ret, frame = cap.read()
-        if ret:
-            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            pil_img = Image.fromarray(frame_rgb)
-            img_buf = render_clean_video_frame(pil_img, subtitle_text=f"🎵 {current_video['title'][:40]}")
-            if img_buf:
-                file = discord.File(fp=img_buf, filename="render.jpg")
-                rendered_message = await ctx.send(file=file, view=TikTokControlView(guild_id))
-
+        first_frame = True
         last_update_time = time.time()
 
-        while cap.isOpened() and not session["stop_flag"] and ctx.voice_client and ctx.voice_client.is_playing():
-            ret, frame = cap.read()
-            if not ret:
-                break
-
-            if frame_count % frame_interval == 0:
+        # Vòng lặp chính chỉ chuyên tâm lấy ảnh từ queue và gửi lên Discord
+        while not session["stop_flag"] and ctx.voice_client and ctx.voice_client.is_playing():
+            try:
+                # Lấy ảnh từ hàng đợi ngầm với timeout ngắn
+                img_buf = frame_queue.get(timeout=0.2)
+                if img_buf is None:
+                    break
+                
+                file = discord.File(fp=img_buf, filename="render.jpg")
                 current_time = time.time()
-                # Chống Rate Limit: Cập nhật tin nhắn Discord cách nhau tối thiểu 0.8s để không bị Discord khóa
-                if current_time - last_update_time >= 0.8:
-                    frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                    pil_img = Image.fromarray(frame_rgb)
-                    img_buf = render_clean_video_frame(pil_img, subtitle_text=f"🎵 {current_video['title'][:40]}")
 
-                    if img_buf:
-                        file = discord.File(fp=img_buf, filename="render.jpg")
+                if first_frame:
+                    rendered_message = await ctx.send(file=file, view=TikTokControlView(guild_id))
+                    first_frame = False
+                    last_update_time = current_time
+                else:
+                    # Giới hạn tốc độ cập nhật ~0.25s / frame để khớp tốc độ mượt mà tối đa
+                    if current_time - last_update_time >= 0.22:
                         try:
                             await status_msg.edit(content=f"📱 *Đang phát từ @{current_video['uploader']}*")
                             await rendered_message.edit(attachments=[file])
                             last_update_time = current_time
                         except Exception:
                             pass
+            except queue.Empty:
+                if not worker_thread.is_alive() and frame_queue.empty():
+                    break
+                await asyncio.sleep(0.05)
+                continue
 
-            await asyncio.sleep(1.0 / target_fps)
-            frame_count += 1
+        stop_thread_flag.set()
+        worker_thread.join(timeout=1.0)
 
-        cap.release()
         if is_temp_file and target_video_path and os.path.exists(target_video_path):
             os.remove(target_video_path)
 
