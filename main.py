@@ -52,28 +52,27 @@ def get_font(size):
     return ImageFont.load_default()
 
 # ==========================================
-# 3. RENDER KHUNG HÌNH (Tối ưu đồ họa nhẹ, mượt)
+# 3. RENDER KHUNG HÌNH SIÊU TỐC
 # ==========================================
 def render_clean_video_frame(video_frame_pil, subtitle_text=""):
     try:
-        # Thu nhỏ khung hình canvas để render cực nhanh và nhẹ máy
-        canvas = Image.new("RGBA", (640, 420), (20, 20, 25, 255))
-        vid_resized = video_frame_pil.resize((236, 420)).convert("RGBA")
-        canvas.paste(vid_resized, (202, 0))
+        canvas = Image.new("RGB", (560, 380), (15, 15, 20))
+        vid_resized = video_frame_pil.resize((214, 380), Image.Resampling.NEAREST).convert("RGB")
+        canvas.paste(vid_resized, (173, 0))
 
         draw = ImageDraw.Draw(canvas)
-        font_sub = get_font(14)
-        wrapped_lines = textwrap.wrap(subtitle_text, width=45)
+        font_sub = get_font(13)
+        wrapped_lines = textwrap.wrap(subtitle_text, width=40)
         
         if wrapped_lines:
-            draw.rectangle([(150, 370), (490, 418)], fill=(10, 10, 15, 210))
-            y_offset = 375
+            draw.rectangle([(120, 335), (440, 378)], fill=(10, 10, 15))
+            y_offset = 340
             for line in wrapped_lines[:2]:
-                draw.text((160, y_offset), line, fill=(255, 255, 255), font=font_sub)
-                y_offset += 20
+                draw.text((130, y_offset), line, fill=(240, 240, 240), font=font_sub)
+                y_offset += 18
 
         buffer = io.BytesIO()
-        canvas.save(buffer, format="PNG", optimize=True)
+        canvas.save(buffer, format="JPEG", quality=70, optimize=True)
         buffer.seek(0)
         return buffer
     except Exception as e:
@@ -184,8 +183,8 @@ async def on_ready():
 @bot.command(name="help", aliases=["h"])
 async def custom_help(ctx):
     embed = discord.Embed(
-        title="📱 SubVibe Video Bot - Phát Video Tối Ưu",
-        description="Bot phát video trực tiếp vào voice (Chế độ siêu nhẹ 12 FPS), hỗ trợ file đính kèm và tự động nghỉ sau 5 video.",
+        title="📱 SubVibe Video Bot - Đồng Bộ Hoàn Hảo",
+        description="Bot tối ưu hiệu năng cao (20 FPS mượt mà, âm thanh được trễ lại 1.75s để khớp hình).",
         color=discord.Color.from_rgb(255, 0, 80)
     )
     embed.add_field(name="▶️ `!Vplay [Link hoặc Từ khóa]` hoặc Đính kèm file video", value="Thêm video vào hàng đợi phát.", inline=False)
@@ -247,7 +246,12 @@ async def play_next_in_queue(ctx):
         if ctx.voice_client.is_playing():
             ctx.voice_client.stop()
         
-        audio_source = discord.FFmpegPCMAudio(target_video_path)
+        # Thêm adelay=1750|1750 để làm âm thanh trễ lại đúng 1.75 giây, khớp hoàn toàn với hình ảnh
+        audio_source = discord.FFmpegPCMAudio(
+            target_video_path, 
+            before_options="-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5",
+            options="-vn -af \"adelay=1750|1750\""
+        )
         ctx.voice_client.play(audio_source, after=lambda e: asyncio.run_coroutine_threadsafe(play_next_in_queue(ctx), bot.loop))
 
         cap = cv2.VideoCapture(target_video_path)
@@ -255,12 +259,20 @@ async def play_next_in_queue(ctx):
         if not fps or fps <= 0 or fps > 60:
             fps = 30.0
             
-        # Giảm xuống 12 FPS để bot chạy siêu mượt, nhẹ nhàng và chống quá tải tuyệt đối
-        target_fps = 12.0
+        target_fps = 20.0
         frame_interval = max(1, int(fps / target_fps))
         
         frame_count = 0
         rendered_message = None
+
+        ret, frame = cap.read()
+        if ret:
+            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            pil_img = Image.fromarray(frame_rgb)
+            img_buf = render_clean_video_frame(pil_img, subtitle_text=f"🎵 {current_video['title'][:40]}")
+            if img_buf:
+                file = discord.File(fp=img_buf, filename="render.jpg")
+                rendered_message = await ctx.send(file=file, view=TikTokControlView(guild_id))
 
         while cap.isOpened() and not session["stop_flag"] and ctx.voice_client and ctx.voice_client.is_playing():
             ret, frame = cap.read()
@@ -274,15 +286,12 @@ async def play_next_in_queue(ctx):
                 img_buf = render_clean_video_frame(pil_img, subtitle_text=f"🎵 {current_video['title'][:40]}")
 
                 if img_buf:
-                    file = discord.File(fp=img_buf, filename="render.png")
-                    if rendered_message is None:
-                        rendered_message = await ctx.send(file=file, view=TikTokControlView(guild_id))
-                    else:
+                    file = discord.File(fp=img_buf, filename="render.jpg")
+                    try:
                         await status_msg.edit(content=f"📱 *Đang phát từ @{current_video['uploader']}*")
-                        try:
-                            await rendered_message.edit(attachments=[file])
-                        except Exception:
-                            pass
+                        await rendered_message.edit(attachments=[file])
+                    except Exception:
+                        pass
 
             await asyncio.sleep(1.0 / target_fps)
             frame_count += 1
