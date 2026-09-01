@@ -298,9 +298,43 @@ async def handle_audio_logic(interaction: discord.Interaction, node: dict):
                 if voice_client.is_playing():
                     voice_client.stop()
                 
-                # BGM đuôi loop, SFX không loop
                 options = FFMPEG_OPTIONS if "bgm" in audio_key or "song" in audio_key else FFMPEG_SFX_OPTIONS
                 voice_client.play(discord.FFmpegPCMAudio(audio_path, **options))
+
+# ---------------------------------------------------------
+# EVENT KIỂM TRA MUTE MIC REAL-TIME CHO MODE NOSILENCE
+# ---------------------------------------------------------
+@bot.event
+async def on_voice_state_update(member, before, after):
+    if member.bot:
+        return
+
+    guild_id = member.guild.id
+    session = active_sessions.get(guild_id, {})
+
+    if session.get("mode") == "nosilence":
+        if after.self_mute or after.mute:
+            voice_client = member.guild.voice_client
+            if voice_client and voice_client.is_connected():
+                if voice_client.is_playing():
+                    voice_client.stop()
+                await voice_client.disconnect()
+            
+            active_sessions[guild_id] = {"is_radio_on": False, "mode": "normal"}
+
+            embed = discord.Embed(
+                title="[THUA CUỘC: VI PHẠM QUY TẮC NO SILENCE]",
+                description=(
+                    f"Người chơi {member.display_name} đã tắt Mic!\n"
+                    "Quái vật Goatman phát hiện ra sự sợ hãi qua nhịp thở bị dồn nén và đã tấn công tháp canh!"
+                ),
+                color=0x8b0000
+            )
+            
+            for channel in member.guild.text_channels:
+                if channel.permissions_for(member.guild.me).send_messages:
+                    await channel.send(embed=embed)
+                    break
 
 # ---------------------------------------------------------
 # XỬ LÝ RENDER & BOT COMMANDS
@@ -373,7 +407,7 @@ async def start_game(ctx, *, mode: str = None):
     if mode and mode.lower() == "alpha force":
         if unlocked_alpha_force.get(ctx.author.id):
             embed = discord.Embed(
-                title="ENDING: ALPHA FORCE",
+                title="[ENDING: ALPHA FORCE]",
                 description=(
                     "Tín hiệu mã hóa đã được gửi đi. Tiếng động cơ gầm rú xé tan màn đêm khuya tăm tối. "
                     "Bốn chiếc trực thăng tấn công Mi-24 Hind xuất hiện từ tầng mây thấp, xả mưa đạn pháo "
@@ -383,7 +417,15 @@ async def start_game(ctx, *, mode: str = None):
                 ),
                 color=0x8b0000
             )
-            await ctx.send(embed=embed)
+            alpha_path = get_asset_path("alpha_force_ending", is_audio=False)
+            if alpha_path:
+                file_ext = os.path.splitext(alpha_path)[1]
+                filename = f"alpha{file_ext}"
+                file = discord.File(alpha_path, filename=filename)
+                embed.set_image(url=f"attachment://{filename}")
+                await ctx.send(embed=embed, file=file)
+            else:
+                await ctx.send(embed=embed)
             return
         else:
             await ctx.send("Bạn chưa mở khóa mã bí mật này.")
@@ -431,7 +473,7 @@ async def start_game(ctx, *, mode: str = None):
 
 @bot.event
 async def on_ready():
-    print(f"Bot {bot.user.name} đã cập nhật chế độ Alpha Force & No Silence thành công.")
+    print(f"Bot {bot.user.name} đã sẵn sàng với đầy đủ tính năng!")
 
 if __name__ == "__main__":
     bot.run(TOKEN)
