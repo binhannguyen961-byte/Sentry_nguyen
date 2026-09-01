@@ -226,9 +226,9 @@ async def play_asset_video(ctx, *, query: str = None):
     is_temp_file = False
 
     try:
-        # Cấu hình yt-dlp tối ưu tránh lỗi format không khả dụng
+        # Cấu hình yt-dlp tối ưu tương thích hoàn toàn
         ydl_opts = {
-            'format': 'best',
+            'format': 'best[ext=mp4]/best',
             'noplaylist': True,
             'outtmpl': os.path.join(tempfile.gettempdir(), 'downloaded_video.%(ext)s'),
             'quiet': True
