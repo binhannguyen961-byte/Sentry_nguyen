@@ -5,6 +5,7 @@ import threading
 import io
 import textwrap
 import tempfile
+import random
 import cv2
 import yt_dlp
 import discord
@@ -55,16 +56,13 @@ def get_font(size):
 def render_clean_video_frame(video_frame_pil, subtitle_text=""):
     try:
         canvas = Image.new("RGBA", (800, 520), (20, 20, 25, 255))
-        # Căn chỉnh khung video dọc vào giữa giao diện
         vid_resized = video_frame_pil.resize((292, 520)).convert("RGBA")
         canvas.paste(vid_resized, (254, 0))
 
         draw = ImageDraw.Draw(canvas)
-        # Hiển thị phụ đề hoặc tiêu đề mô tả ở góc dưới
         font_sub = get_font(16)
         wrapped_lines = textwrap.wrap(subtitle_text, width=50)
         
-        # Tạo khung nền mờ cho chữ dễ đọc
         if wrapped_lines:
             draw.rectangle([(200, 460), (600, 518)], fill=(10, 10, 15, 210))
             y_offset = 466
@@ -83,8 +81,8 @@ def render_clean_video_frame(video_frame_pil, subtitle_text=""):
 # ==========================================
 # 4. QUẢN LÝ HÀNG ĐỢI VÀ AUTOPLAY TIKTOK
 # ==========================================
-guild_queues = {}     # Lưu danh sách hàng đợi video của mỗi server
-played_counters = {}  # Đếm số lượng video đã phát liên tục
+guild_queues = {}     
+played_counters = {}  
 
 def get_tiktok_video_info(query):
     try:
@@ -93,7 +91,12 @@ def get_tiktok_video_info(query):
             'noplaylist': True,
             'quiet': True,
         }
-        search_target = query if "tiktok.com" in query else f"tiksearch:{query}"
+        
+        if "tiktok.com" in query:
+            search_target = query
+        else:
+            search_target = f"ytsearch1:tiktok {query}"
+
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(search_target, download=False)
             if 'entries' in info:
@@ -159,10 +162,10 @@ async def on_ready():
 async def custom_help(ctx):
     embed = discord.Embed(
         title="📱 SubVibe TikTok - Phát Video Ngắn & Autoplay",
-        description="Bot phát video TikTok trực tiếp vào voice, tự động tìm video liên quan và nghỉ ngơi sau mỗi 5 video.",
+        description="Bot phát video trực tiếp vào voice, tự động tìm video liên quan và nghỉ ngơi sau mỗi 5 video.",
         color=discord.Color.from_rgb(255, 0, 80)
     )
-    embed.add_field(name="▶️ `!Vplay [Link hoặc Từ khóa]`", value="Thêm video TikTok vào hàng đợi phát.", inline=False)
+    embed.add_field(name="▶️ `!Vplay [Link hoặc Từ khóa]`", value="Thêm video vào hàng đợi phát.", inline=False)
     await ctx.send(embed=embed)
 
 async def play_next_in_queue(ctx):
@@ -170,9 +173,7 @@ async def play_next_in_queue(ctx):
     queue = guild_queues.get(guild_id, [])
 
     if not queue:
-        # Cơ chế Autoplay: Tự động gợi ý video liên quan nếu hàng đợi trống
-        fallback_queries = ["trending tiktok", "viral edits anime", "satisfying clips"]
-        import random
+        fallback_queries = ["tiktok trending", "viral edits", "satisfying clips"]
         auto_query = random.choice(fallback_queries)
         next_data = get_tiktok_video_info(auto_query)
         if next_data:
@@ -190,7 +191,7 @@ async def play_next_in_queue(ctx):
     if not session or session["stop_flag"]:
         return
 
-    status_msg = await ctx.send(f"🤖 *Đang tải TikTok: `{current_video['title']}` từ `{current_video['uploader']}`...*")
+    status_msg = await ctx.send(f"🤖 *Đang tải video: `{current_video['title']}` từ `{current_video['uploader']}`...*")
 
     target_video_path = None
     is_temp_file = False
@@ -236,7 +237,7 @@ async def play_next_in_queue(ctx):
                     if rendered_message is None:
                         rendered_message = await ctx.send(file=file, view=TikTokControlView(guild_id))
                     else:
-                        await status_msg.edit(content=f"📱 *Đang phát TikTok từ @{current_video['uploader']}*")
+                        await status_msg.edit(content=f"📱 *Đang phát từ @{current_video['uploader']}*")
                         await rendered_message.edit(attachments=[file])
 
             await asyncio.sleep(1.0 / target_fps)
@@ -246,18 +247,16 @@ async def play_next_in_queue(ctx):
         if is_temp_file and target_video_path and os.path.exists(target_video_path):
             os.remove(target_video_path)
 
-        # Đếm số lượng video đã phát để kích hoạt cơ chế nghỉ sau mỗi 5 video
         played_counters[guild_id] = played_counters.get(guild_id, 0) + 1
         if played_counters[guild_id] >= 5:
             played_counters[guild_id] = 0
-            await ctx.send("☕ *Đã phát liên tục 5 video TikTok rồi! Chúng ta nghỉ giải lao thư giãn 1 phút nhé.*")
+            await ctx.send("☕ *Đã phát liên tục 5 video rồi! Chúng ta nghỉ giải lao thư giãn 1 phút nhé.*")
             await asyncio.sleep(60)
 
     except Exception as e:
-        print(f"Lỗi phát TikTok: {e}")
+        print(f"Lỗi phát video: {e}")
         if is_temp_file and target_video_path and os.path.exists(target_video_path):
             os.remove(target_video_path)
-        # Tự động chuyển bài tiếp theo nếu lỗi
         asyncio.run_coroutine_threadsafe(play_next_in_queue(ctx), bot.loop)
 
 @bot.command(name="play", aliases=["t", "phat"])
@@ -267,7 +266,7 @@ async def play_tiktok(ctx, *, query: str = None):
         return
 
     if not query:
-        await ctx.send("⚠️ Vui lòng nhập link hoặc từ khóa TikTok. Ví dụ: `!Vplay anime edit`")
+        await ctx.send("⚠️ Vui lòng nhập link hoặc từ khóa. Ví dụ: `!Vplay ka-52`")
         return
 
     voice_channel = ctx.author.voice.channel
@@ -284,11 +283,11 @@ async def play_tiktok(ctx, *, query: str = None):
     if guild_id not in guild_queues:
         guild_queues[guild_id] = []
 
-    await ctx.send(f"🔍 *Đang tìm kiếm video TikTok cho từ khóa: `{query}`...*")
+    await ctx.send(f"🔍 *Đang tìm kiếm video cho từ khóa: `{query}`...*")
     video_info = get_tiktok_video_info(query)
 
     if not video_info:
-        await ctx.send("❌ Không tìm thấy video TikTok phù hợp!")
+        await ctx.send("❌ Không tìm thấy video phù hợp!")
         return
 
     guild_queues[guild_id].append(video_info)
@@ -297,7 +296,7 @@ async def play_tiktok(ctx, *, query: str = None):
         active_sessions[guild_id] = {"is_playing": True, "stop_flag": False}
         await play_next_in_queue(ctx)
     else:
-        await ctx.send(f"✅ Đã thêm vào hàng đợi (Queue): **{video_info['title']}** (@{video_info['uploader']})")
+        await ctx.send(f"✅ Đã thêm vào hàng đợi: **{video_info['title']}** (@{video_info['uploader']})")
 
 # ==========================================
 # 7. KHỞI CHẠY BOT
