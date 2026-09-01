@@ -184,7 +184,7 @@ async def on_ready():
 async def custom_help(ctx):
     embed = discord.Embed(
         title="📱 SubVibe Video Bot - Phát Video & Autoplay",
-        description="Bot phát video trực tiếp vào voice (25 FPS), hỗ trợ đính kèm file video, tìm kiếm từ khóa và tự động nghỉ sau 5 video.",
+        description="Bot phát video trực tiếp vào voice (15 FPS ổn định), hỗ trợ đính kèm file video, tìm kiếm từ khóa và tự động nghỉ sau 5 video.",
         color=discord.Color.from_rgb(255, 0, 80)
     )
     embed.add_field(name="▶️ `!Vplay [Link hoặc Từ khóa]` hoặc Đính kèm file video", value="Thêm video vào hàng đợi phát.", inline=False)
@@ -221,11 +221,9 @@ async def play_next_in_queue(ctx):
     try:
         source_url = current_video['url']
         if "discordapp.com" in source_url or "cdn.discordapp.com" in source_url:
-            # Lấy đúng phần mở rộng của file đính kèm (vd: .mov, .mp4,...)
             ext = os.path.splitext(source_url.split("?")[0])[1] or ".mp4"
             target_video_path = os.path.join(tempfile.gettempdir(), f"uploaded_{random.randint(1000,9999)}{ext}")
             
-            # Tải file từ Discord CDN kèm User-Agent để tránh lỗi 403 Forbidden
             req = urllib.request.Request(
                 source_url,
                 headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
@@ -256,8 +254,8 @@ async def play_next_in_queue(ctx):
         if not fps or fps <= 0 or fps > 60:
             fps = 30.0
             
-        # Thiết lập chuẩn 25 FPS cho video mượt mà và khớp tiếng
-        target_fps = 25.0
+        # Thiết lập chuẩn 15 FPS tối ưu hiệu năng và chống quá tải bot
+        target_fps = 15.0
         frame_interval = max(1, int(fps / target_fps))
         
         frame_count = 0
@@ -352,7 +350,7 @@ async def play_tiktok(ctx, *, query: str = None):
         await ctx.send("❌ Không thể tìm thấy video phù hợp, vui lòng thử lại!")
         return
 
-    guild_queues[guild_id].append(video_info)
+guild_queues[guild_id].append(video_info)
 
     if guild_id not in active_sessions or not active_sessions[guild_id]["is_playing"]:
         active_sessions[guild_id] = {"is_playing": True, "stop_flag": False}
