@@ -5,6 +5,7 @@ import asyncio
 import threading
 from PIL import Image
 from flask import Flask
+from gtts import gTTS
 import discord
 from discord.ext import commands
 from discord.ui import Button, View
@@ -28,14 +29,14 @@ app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "Media Convert & MP3 Player Bot is Online!"
+    return "All-in-One Discord Bot is Online!"
 
 def run_flask():
     port = int(os.environ.get("PORT", 10000))
     app.run(host='0.0.0.0', port=port)
 
 # ==========================================
-# 3. KHỞI TẠO DISCORD BOT & HÀNG CHỜ NHẠC
+# 3. KHỞI TẠO DISCORD BOT & BỘ NHỚ HÀNG CHỜ
 # ==========================================
 intents = discord.Intents.default()
 intents.message_content = True
@@ -43,7 +44,6 @@ intents.voice_states = True
 
 bot = commands.Bot(command_prefix=["!", "/"], intents=intents, help_command=None)
 
-# Quản lý hàng chờ nhạc và chế độ lặp lại theo từng Server (Guild)
 music_queues = {}
 is_looping = {}
 current_track = {}
@@ -55,7 +55,7 @@ def get_queue(guild_id):
 
 @bot.event
 async def on_ready():
-    print(f"-> Bot đã sẵn sàng: {bot.user}")
+    print(f"-> Bot đã sẵn sàng hoạt động: {bot.user}")
 
 # ==========================================
 # 4. VIEW NÚT BẤM ĐIỀU KHIỂN MP3 (DISCORD UI)
@@ -74,10 +74,10 @@ class MusicPlayerView(View):
 
         if vc.is_paused():
             vc.resume()
-            await interaction.response.send_message("▶️ Đã tiếp tục phát nhạc!", ephemeral=True)
+            await interaction.response.send_message("▶️ Đã tiếp tục phát!", ephemeral=True)
         elif vc.is_playing():
             vc.pause()
-            await interaction.response.send_message("⏸️ Đã tạm dừng nhạc!", ephemeral=True)
+            await interaction.response.send_message("⏸️ Đã tạm dừng!", ephemeral=True)
         else:
             await interaction.response.send_message("❌ Không có bài hát nào đang phát!", ephemeral=True)
 
@@ -88,15 +88,15 @@ class MusicPlayerView(View):
             await interaction.response.send_message("❌ Không có bài hát nào để bỏ qua!", ephemeral=True)
             return
 
-        vc.stop()  # Tự động nhảy sang bài tiếp theo trong hàm play_next_track
-        await interaction.response.send_message("⏭️ Đã bỏ qua bài hát hiện tại!", ephemeral=True)
+        vc.stop()
+        await interaction.response.send_message("⏭️ Đã bỏ qua bài hiện tại!", ephemeral=True)
 
     @discord.ui.button(label="🔁 Loop", style=discord.ButtonStyle.success)
     async def btn_loop(self, interaction: discord.Interaction, button: Button):
         guild_id = interaction.guild.id
         is_looping[guild_id] = not is_looping.get(guild_id, False)
         status = "BẬT 🔁" if is_looping[guild_id] else "TẮT 🔄"
-        await interaction.response.send_message(f"🔁 Chế độ lặp lại bài hát: **{status}**", ephemeral=True)
+        await interaction.response.send_message(f"🔁 Chế độ lặp lại: **{status}**", ephemeral=True)
 
     @discord.ui.button(label="⏹️ Stop", style=discord.ButtonStyle.danger)
     async def btn_stop(self, interaction: discord.Interaction, button: Button):
@@ -110,10 +110,10 @@ class MusicPlayerView(View):
             vc.stop()
             await vc.disconnect()
 
-        await interaction.response.send_message("⏹️ Đã dừng phát nhạc, xóa hàng chờ và ngắt kết nối Voice!", ephemeral=True)
+        await interaction.response.send_message("⏹️ Đã dừng phát, xóa hàng chờ và thoát Voice!", ephemeral=True)
 
 # ==========================================
-# 5. ENGINE PHÁT NHẠC MP3 KẾ TIẾP
+# 5. ENGINE PHÁT MP3
 # ==========================================
 def play_next_track(ctx):
     guild_id = ctx.guild.id
@@ -123,7 +123,6 @@ def play_next_track(ctx):
     if not vc:
         return
 
-    # Nếu bật chế độ Loop và đang có bài hát phát
     if is_looping.get(guild_id, False) and guild_id in current_track:
         song_info = current_track[guild_id]
     elif len(queue) > 0:
@@ -145,23 +144,20 @@ def play_next_track(ctx):
         color=discord.Color.blue()
     )
     
-    # Gửi bảng điều khiển nút bấm
     view = MusicPlayerView(ctx)
     asyncio.run_coroutine_threadsafe(ctx.send(embed=embed, view=view), bot.loop)
 
 # ==========================================
-# 6. LỆNH THÊM MP3 (!add) & XEM HÀNG CHỜ (!queue)
+# 6. LỆNH PHÁT NHẠC MP3 (!add, !queue)
 # ==========================================
 @bot.command(name="add")
 async def add_mp3(ctx):
-    # 1. Kiểm tra Voice Channel
     if not ctx.author.voice or not ctx.author.voice.channel:
         await ctx.send("❌ Cậu phải vào một Voice Channel trước khi dùng lệnh `!add`!")
         return
 
-    # 2. Kiểm tra file MP3 đính kèm
     if not ctx.message.attachments:
-        await ctx.send("❌ Cậu hãy gửi kèm một file âm thanh (.mp3) cùng với lệnh `!add` nhé!")
+        await ctx.send("❌ Cậu hãy gửi kèm một file nhạc (.mp3) cùng với lệnh `!add`!")
         return
 
     attachment = ctx.message.attachments[0]
@@ -169,7 +165,6 @@ async def add_mp3(ctx):
         await ctx.send("❌ Chỉ hỗ trợ định dạng file nhạc `.mp3`!")
         return
 
-    # 3. Kết nối Voice Channel
     user_channel = ctx.author.voice.channel
     vc = ctx.voice_client
 
@@ -178,7 +173,6 @@ async def add_mp3(ctx):
     elif vc.channel != user_channel:
         await vc.move_to(user_channel)
 
-    # 4. Lưu file MP3 vào thư mục tạm
     if not os.path.exists("temp_audio"):
         os.makedirs("temp_audio")
 
@@ -193,7 +187,6 @@ async def add_mp3(ctx):
 
     queue = get_queue(ctx.guild.id)
 
-    # Nếu bot chưa phát nhạc thì phát ngay, ngược lại thêm vào hàng chờ
     if not vc.is_playing() and not vc.is_paused():
         queue.append(song_info)
         play_next_track(ctx)
@@ -227,9 +220,81 @@ async def show_queue(ctx):
     await ctx.send(embed=embed)
 
 # ==========================================
-# 7. HÀM TÁCH VIDEO THÀNH GIF (!process)
+# 7. LỆNH TTS ĐỌC GIỌNG NÓI + NHẠC NỀN (!tts)
 # ==========================================
-def process_video_to_gifs(video_path, chunk_duration=10, target_fps=12):
+@bot.command(name="tts")
+async def text_to_speech(ctx, lang_or_text: str = None, *, text_rest: str = None):
+    if not ctx.author.voice or not ctx.author.voice.channel:
+        await ctx.send("❌ Cậu phải tham gia vào Voice Channel trước!")
+        return
+
+    if not lang_or_text:
+        await ctx.send("❌ Cậu phải nhập nội dung cần đọc! Ví dụ: `!tts Xin chào` hoặc `!tts en Hello` (Gửi kèm MP3 nếu muốn có nhạc nền).")
+        return
+
+    # Xử lý biến ngôn ngữ (Default là 'vi')
+    if text_rest:
+        lang_code = lang_or_text
+        text_content = text_rest
+    else:
+        lang_code = "vi"
+        text_content = lang_or_text
+
+    user_channel = ctx.author.voice.channel
+    vc = ctx.voice_client
+
+    if vc is None:
+        vc = await user_channel.connect()
+    elif vc.channel != user_channel:
+        await vc.move_to(user_channel)
+
+    if vc.is_playing():
+        vc.stop()
+
+    if not os.path.exists("temp_audio"):
+        os.makedirs("temp_audio")
+
+    tts_path = f"temp_audio/tts_{ctx.author.id}.mp3"
+
+    try:
+        # Tạo giọng đọc từ các Variable
+        tts = gTTS(text=text_content, lang=lang_code, slow=False)
+        tts.save(tts_path)
+    except Exception as e:
+        await ctx.send(f"❌ Lỗi tạo TTS (Kiểm tra lại mã ngôn ngữ `{lang_code}`): {e}")
+        return
+
+    # Kiểm tra đính kèm file nhạc nền MP3
+    bg_music_path = None
+    if ctx.message.attachments:
+        attachment = ctx.message.attachments[0]
+        if attachment.filename.lower().endswith('.mp3'):
+            bg_music_path = f"temp_audio/bg_{attachment.id}_{attachment.filename}"
+            await attachment.save(bg_music_path)
+
+    # Phát âm thanh trộn nhạc qua FFmpeg
+    if bg_music_path:
+        ffmpeg_options = {
+            'options': f'-i "{bg_music_path}" -filter_complex "[0:a]volume=1.6[voice];[1:a]volume=0.25[bg];[voice][bg]amix=inputs=2:duration=first[out]" -map "[out]"'
+        }
+        audio_source = discord.FFmpegPCMAudio(tts_path, executable="ffmpeg", **ffmpeg_options)
+        await ctx.send(f"🗣️ **Đang đọc TTS (`{lang_code}`) kèm Nhạc nền:** `{text_content}`")
+    else:
+        audio_source = discord.FFmpegPCMAudio(tts_path, executable="ffmpeg")
+        await ctx.send(f"🗣️ **Đang đọc TTS (`{lang_code}`):** `{text_content}`")
+
+    def after_playing(error):
+        if os.path.exists(tts_path):
+            os.remove(tts_path)
+        if bg_music_path and os.path.exists(bg_music_path):
+            os.remove(bg_music_path)
+
+    vc.play(audio_source, after=after_playing)
+
+# ==========================================
+# 8. HÀM TÁCH VIDEO THÀNH GIF (!process)
+# ==========================================
+def process_video_to_gifs(video_path, chunk_duration=10, target_fps=8):
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
         return None, "Không thể đọc file video!"
@@ -261,7 +326,9 @@ def process_video_to_gifs(video_path, chunk_duration=10, target_fps=12):
             if current_frame % frame_interval == 0:
                 frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                 pil_img = Image.fromarray(frame_rgb)
-                pil_img = pil_img.resize((480, 270), Image.Resampling.LANCZOS)
+                # Thu nhỏ 360x202 + nén 128 màu giúp file GIF siêu nhẹ (Tránh lỗi 413)
+                pil_img = pil_img.resize((360, 202), Image.Resampling.BILINEAR)
+                pil_img = pil_img.convert("P", palette=Image.Palette.ADAPTIVE, colors=128)
                 chunk_frames.append(pil_img)
 
             current_frame += 1
@@ -366,7 +433,7 @@ async def process_media(ctx):
             os.remove(temp_video_path)
 
 # ==========================================
-# 8. TỰ ĐỘNG NGẮT VOICE KHI KHÔNG CÒN AI
+# 9. TỰ ĐỘNG NGẮT VOICE KHI PHÒNG TRỐNG
 # ==========================================
 @bot.event
 async def on_voice_state_update(member, before, after):
@@ -375,7 +442,7 @@ async def on_voice_state_update(member, before, after):
             await vc.disconnect()
 
 # ==========================================
-# 9. KHỞI CHẠY BOT
+# 10. KHỞI CHẠY BOT
 # ==========================================
 if __name__ == "__main__":
     t_flask = threading.Thread(target=run_flask)
