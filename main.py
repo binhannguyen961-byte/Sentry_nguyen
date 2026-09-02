@@ -34,7 +34,7 @@ def run_flask():
     app.run(host='0.0.0.0', port=port)
 
 # ==========================================
-# 3. KHOI TẠO DISCORD BOT
+# 3. KHỞI TẠO DISCORD BOT
 # ==========================================
 intents = discord.Intents.default()
 intents.message_content = True
@@ -105,7 +105,7 @@ def process_video_to_gifs(video_path, chunk_duration=10, target_fps=8):
     return gif_buffers, None
 
 # ==========================================
-# 5. LỆNH XỬ LÝ CHÍNH (!process hoặc !convert)
+# 5. LỆNH XỬ LÝ CHÍNH (!process / !gif / !convert)
 # ==========================================
 @bot.command(name="process", aliases=["convert", "gif"])
 async def process_media(ctx):
@@ -124,12 +124,24 @@ async def process_media(ctx):
         await ctx.send("❌ Chỉ hỗ trợ định dạng video (.mp4, .mov, .mkv)!")
         return
 
-    status_msg = await ctx.send("⏳ *Đang tải và xử lý video... Vui lòng chờ trong giây lát!*")
+    display_msg = await ctx.send("⏳ *Đang tải và xử lý video... Vui lòng chờ trong giây lát!*")
     temp_video_path = f"temp_{ctx.author.id}_{attachment.filename}"
     await attachment.save(temp_video_path)
 
     try:
-        # 3. Kết nối Voice Channel
+        # 3. Cắt Video thành danh sách các file GIF (10s/đoạn)
+        loop = asyncio.get_event_loop()
+        gif_list, err = await loop.run_in_executor(None, process_video_to_gifs, temp_video_path)
+
+        if err:
+            await display_msg.edit(content=f"❌ Lỗi: {err}")
+            return
+
+        if not gif_list:
+            await display_msg.edit(content="❌ Không thể cắt GIF từ video này.")
+            return
+
+        # 4. Kết nối Voice Channel
         user_channel = ctx.author.voice.channel
         voice_client = ctx.voice_client
 
@@ -138,26 +150,30 @@ async def process_media(ctx):
         elif voice_client.channel != user_channel:
             await voice_client.move_to(user_channel)
 
-        # Dừng âm thanh cũ nếu đang phát
         if voice_client.is_playing():
             voice_client.stop()
 
-        # 4. Phát Âm thanh từ Video trong Voice Room
+        # 5. Phát Âm thanh từ Video trong Voice Channel
         audio_source = discord.FFmpegPCMAudio(temp_video_path, executable="ffmpeg")
         voice_client.play(audio_source)
-        await status_msg.edit(content="🔊 *Đang phát âm thanh trong Voice Channel & Cắt video thành GIF...*")
 
-        # 5. Cắt Video thành nhiều file GIF
-        loop = asyncio.get_event_loop()
-        gif_list, err = await loop.run_in_executor(None, process_video_to_gifs, temp_video_path)
+        # 6. HIỂN THỊ VÀ CHỈNH SỬA TIN NHẮN THEO TIẾN ĐỘ (EDIT MESSAGE)
+        total_parts = len(gif_list)
+        for index, (gif_name, gif_buf) in enumerate(gif_list, start=1):
+            file = discord.File(fp=gif_buf, filename=gif_name)
+            
+            # Sửa trực tiếp tin nhắn ban đầu với file GIF mới
+            await display_msg.edit(
+                content=f"🎬 **Đang trình chiếu đoạn [{index}/{total_parts}]**",
+                attachments=[file]
+            )
 
-        if err:
-            await ctx.send(f"❌ Lỗi: {err}")
-        elif gif_list:
-            await ctx.send(f"🎬 **Đã chuyển đổi xong {len(gif_list)} đoạn GIF từ Video:**")
-            for gif_name, gif_buf in gif_list:
-                file = discord.File(fp=gif_buf, filename=gif_name)
-                await ctx.send(file=file)
+            # Nếu chưa tới GIF cuối cùng, chờ 10 giây (thời lượng GIF) rồi mới edit đoạn tiếp theo
+            if index < total_parts:
+                await asyncio.sleep(10)
+
+        # Cập nhật thông báo sau khi trình chiếu xong toàn bộ
+        await display_msg.edit(content=f"✅ **Đã hoàn thành trình chiếu {total_parts} đoạn GIF!**")
 
     except Exception as e:
         await ctx.send(f"❌ Lỗi trong quá trình xử lý: {e}")
