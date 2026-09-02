@@ -3,3 +3,5 @@ opencv-python-headless
 Pillow
 Flask
 gTTS
+SpeechRecognition
+pydub
