@@ -242,7 +242,7 @@ async def write_command(ctx, *, code: str = None):
             f"Trả lời ngắn gọn bằng tiếng Anh."
         )
         response = gemini_client.models.generate_content(
-            model="gemini-2.5-flash",
+            model="gemini-3.6-flash",
             contents=prompt
         )
         ai_reply = response.text.strip()
