@@ -4,20 +4,18 @@ import discord
 from discord.ext import commands
 from gtts import gTTS
 from PIL import Image, ImageDraw, ImageFont
-from moviepy.editor import VideoFileClip
+from pillow_heif import register_heif_opener
 from google import genai
 
-# Khai báo Intents
+# Đăng ký mở file HEIC của iOS cho Pillow
+register_heif_opener()
+
 intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-# Khởi tạo Client Gemini
 gemini_client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
 
-# ==========================================
-# CẤU HÌNH GITHUB REPO & CẤU TRÚC THƯ MỤC
-# ==========================================
 REPO_LINK = "https://github.com/binhannguyen961-byte/Sentry_nguyen/tree/main"
 RAW_GITHUB_BASE = "https://raw.githubusercontent.com/binhannguyen961-byte/Sentry_nguyen/main/assets"
 
@@ -27,15 +25,15 @@ LINK_DEVNOTE = "https://x.com/thetruthisalies/status/2095092376071290952?s=46"
 ASSETS_DIR = "game_01"
 os.makedirs(ASSETS_DIR, exist_ok=True)
 
-# Danh sách tài nguyên cần đồng bộ từ Repo
+# Các tài nguyên đồng bộ từ Repo GitHub của Nam
 REQUIRED_ASSETS = [
-    "meltdown_ending.png",
-    "mirror_0.png",
-    "room_background.png",
-    "starting_sence.png",
-    "walking_01.png",
+    "meltdown_ending.jpg",
+    "mirror_0.jpg",
+    "walking_01.mov",
+    "starting_sence.mov",
+    "room_background.heic",
     "bg_music.mp3",
-    "jumpscare.mp4"  # Video cho hiệu ứng chuyển đổi GIF
+    "jumpscare.mp4"
 ]
 
 game_state = {
@@ -44,10 +42,10 @@ game_state = {
 }
 
 # ==========================================
-# 1. TỰ ĐỘNG TẢI ASSETS TỪ REPO GITHUB
+# 1. TỰ ĐỘNG ĐỒNG BỘ ASSETS TỪ GITHUB
 # ==========================================
 def sync_assets_from_repo():
-    print("🔄 Đang đồng bộ tài nguyên từ GitHub Repo...")
+    print("🔄 Đang kiểm tra và đồng bộ tài nguyên từ GitHub Repo...")
     for filename in REQUIRED_ASSETS:
         local_path = os.path.join(ASSETS_DIR, filename)
         if not os.path.exists(local_path):
@@ -65,31 +63,7 @@ def sync_assets_from_repo():
                 print(f"❌ Lỗi tải {filename}: {e}")
 
 # ==========================================
-# 2. XỬ LÝ CHUYỂN MP4 SANG GIF LITE (MOVIEPY)
-# ==========================================
-def convert_mp4_to_lowres_gif(mp4_filename: str, output_gif_name: str, width: int = 480, fps: int = 12) -> str:
-    input_path = os.path.join(ASSETS_DIR, mp4_filename)
-    output_path = os.path.join(ASSETS_DIR, output_gif_name)
-
-    if os.path.exists(output_path):
-        return output_path
-
-    if os.path.exists(input_path):
-        print(f"🎬 Đang nén video {mp4_filename} sang GIF...")
-        try:
-            clip = VideoFileClip(input_path)
-            lowres = clip.resize(width=width)
-            lowres.write_gif(output_path, fps=fps, program='ffmpeg', opt='optimizeplus')
-            clip.close()
-            print(f"✅ Đã chuyển đổi thành công: {output_gif_name}")
-            return output_path
-        except Exception as e:
-            print(f"❌ Lỗi chuyển đổi MP4 sang GIF: {e}")
-            return None
-    return None
-
-# ==========================================
-# 3. HÀM TẠO KHUNG CHAT BẰNG PILLOW
+# 2. TẠO KHUNG CHAT BẰNG PILLOW
 # ==========================================
 def create_chat_frame(username: str, message_text: str, bg_image_name: str) -> str:
     output_path = os.path.join(ASSETS_DIR, "generated_chat.jpg")
@@ -124,7 +98,7 @@ def create_chat_frame(username: str, message_text: str, bg_image_name: str) -> s
     return output_path
 
 # ==========================================
-# 4. HÀM XỬ LÝ TTS & VOICE
+# 3. XỬ LÝ TTS & VOICE
 # ==========================================
 def generate_tts_audio(text: str, filename: str = "dialogue.mp3") -> str:
     filepath = os.path.join(ASSETS_DIR, filename)
@@ -140,27 +114,27 @@ async def play_tts_in_voice(ctx, audio_path: str):
         ctx.voice_client.play(source)
 
 # ==========================================
-# 5. BẮT ĐẦU CÁC LỆNH BOT
+# 4. CÁC LỆNH BOT
 # ==========================================
 @bot.event
 async def on_ready():
     sync_assets_from_repo()
-    print(f"🚀 Bot Sentry [{bot.user.name}] đã chạy sẵn sàng!")
+    print(f"🚀 Bot Sentry [{bot.user.name}] đã sẵn sàng hoạt động!")
 
 @bot.command(name="join")
 async def join_voice(ctx):
     if ctx.author.voice:
         channel = ctx.author.voice.channel
         await channel.connect()
-        await ctx.send(f"🔊 Đã vào Voice Channel: `{channel.name}`")
+        await ctx.send(f"🔊 Đã vào kênh voice: `{channel.name}`")
     else:
-        await ctx.send("❌ Bạn cần tham gia phòng Voice trước!")
+        await ctx.send("❌ Bạn cần vào phòng Voice trước!")
 
 @bot.command(name="leave")
 async def leave_voice(ctx):
     if ctx.voice_client:
         await ctx.voice_client.disconnect()
-        await ctx.send("🔇 Đã ngắt kết nối khỏi phòng Voice.")
+        await ctx.send("🔇 Đã ngắt kết nối Voice.")
 
 @bot.command(name="playbg")
 async def play_background_music(ctx):
@@ -175,7 +149,7 @@ async def play_background_music(ctx):
         ffmpeg_options = {'options': '-stream_loop -1'}
         source = discord.FFmpegPCMAudio(bg_path, **ffmpeg_options)
         ctx.voice_client.play(source)
-        await ctx.send("🎶 Đang phát nhạc nền không khí từ Repo...")
+        await ctx.send("🎶 Đang phát nhạc nền bầu không khí từ Repo...")
     else:
         await ctx.send("❌ Không tìm thấy `bg_music.mp3`!")
 
@@ -188,7 +162,7 @@ async def start_game(ctx, repo: str = None):
     game_state["mirror_clicks"] = 0
     dialogue = "The truth is a lie. Welcome to the abandoned house."
     
-    chat_img_path = create_chat_frame("SYSTEM", dialogue, "starting_sence.png")
+    chat_img_path = create_chat_frame("SYSTEM", dialogue, "room_background.heic")
     audio_path = generate_tts_audio(dialogue, "start.mp3")
 
     await play_tts_in_voice(ctx, audio_path)
@@ -206,10 +180,10 @@ async def look_around(ctx):
 
     if clicks < 8:
         dialogue = f"You stare into the mirror on the floor. Count {clicks}."
-        bg_name = "mirror_0.png"
+        bg_name = "mirror_0.jpg"
     else:
         dialogue = "Identity meltdown detected. Enter code 4099."
-        bg_name = "meltdown_ending.png"
+        bg_name = "meltdown_ending.jpg"
 
     chat_img_path = create_chat_frame("MIRROR", dialogue, bg_name)
     audio_path = generate_tts_audio(dialogue, f"look_{clicks}.mp3")
@@ -244,39 +218,36 @@ async def write_command(ctx, *, code: str = None):
         await ctx.send(content=f"📝 {LINK_DEVNOTE}", file=discord.File(audio_path))
         return
 
-    # Kịch bản MP4 sang GIF Jumpscare
-    if code_clean == "6107":
-        gif_path = convert_mp4_to_lowres_gif("jumpscare.mp4", "jumpscare_lowres.gif", width=480, fps=12)
-        if gif_path:
-            dialogue = "IT IS BEHIND YOU."
-            audio_path = generate_tts_audio(dialogue, "scare.mp3")
+    # Mã chạy video chuyển động trực tiếp (.mov / .mp4)
+    if code_clean == "walking":
+        video_path = os.path.join(ASSETS_DIR, "walking_01.mov")
+        if os.path.exists(video_path):
+            dialogue = "Footsteps approaching..."
+            audio_path = generate_tts_audio(dialogue, "walking.mp3")
             await play_tts_in_voice(ctx, audio_path)
-
-            embed = discord.Embed(title="⚠️ CRITICAL SIGNAL DETECTED", color=discord.Color.dark_red())
-            embed.set_image(url="attachment://jumpscare.gif")
             
             files = [
-                discord.File(gif_path, filename="jumpscare.gif"),
+                discord.File(video_path, filename="walking.mov"),
                 discord.File(audio_path, filename="voice.mp3")
             ]
-            await ctx.send(embed=embed, files=files)
+            await ctx.send(content="⚠️ **[MOVEMENT DETECTED]**", files=files)
             return
 
-    # MÃ LẠ/KHÔNG KHỚP: Gọi Gemini phản hồi luyên thuyên + mốc 2007
+    # MÃ LẠ: Gọi Gemini phản hồi luyên thuyên + nhắc mốc năm 2007
     try:
         prompt = (
             f"Bạn là một nhân vật kỳ dị trong game tâm lý kinh dị ARG. "
-            f"Người chơi vừa gõ mã '{code}'. Hãy trả lời luyên thuyên,vô định,không rõ bản thân là ai bối cảnh hiện tại là đâu mang lại trải nghiệm vô định trống rỗng "
-            f"thi thoảng lái sang chủ đề khác nhưng thường xuyên phải nhắc tới con số 2007. "
+            f"Người chơi vừa gõ mã '{code}'. Hãy trả lời luyên thuyên, vô định,bí ẩn một cách điềm tĩnh, "
+            f"thi thoảng lái sang chủ đề khác nhưng phải thường xuyên nhắc tới con số 2007. "
             f"Trả lời ngắn gọn bằng tiếng Anh."
         )
         response = gemini_client.models.generate_content(
-            model="gemini-3.6-flash",
+            model="gemini-2.5-flash",
             contents=prompt
         )
         ai_reply = response.text.strip()
         
-        chat_img = create_chat_frame("STRANGER", ai_reply, "walking_01.png")
+        chat_img = create_chat_frame("STRANGER", ai_reply, "mirror_0.jpg")
         audio_path = generate_tts_audio(ai_reply, "ai_reply.mp3")
 
         await play_tts_in_voice(ctx, audio_path)
