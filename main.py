@@ -153,8 +153,12 @@ async def process_media(ctx):
         if voice_client.is_playing():
             voice_client.stop()
 
-        # 5. Phát Âm thanh từ Video trong Voice Channel
-        audio_source = discord.FFmpegPCMAudio(temp_video_path, executable="ffmpeg")
+        # 5. Phát Âm thanh từ Video trong Voice Channel (TÍCH HỢP DELAY 3 GIÂY)
+        # Tùy chọn -af adelay=3000|3000 sẽ hoãn âm thanh 3000ms (3 giây) cho cả 2 kênh stereo
+        ffmpeg_options = {
+            'options': '-af "adelay=3000|3000"'
+        }
+        audio_source = discord.FFmpegPCMAudio(temp_video_path, executable="ffmpeg", **ffmpeg_options)
         voice_client.play(audio_source)
 
         # 6. HIỂN THỊ VÀ CHỈNH SỬA TIN NHẮN THEO TIẾN ĐỘ (EDIT MESSAGE)
@@ -164,7 +168,7 @@ async def process_media(ctx):
             
             # Sửa trực tiếp tin nhắn ban đầu với file GIF mới
             await display_msg.edit(
-                content=f"🎬 **Đang trình chiếu đoạn [{index}/{total_parts}]**",
+                content=f"🎬 **Đang trình chiếu đoạn [{index}/{total_parts}]** *(Âm thanh delay 3s)*",
                 attachments=[file]
             )
 
