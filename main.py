@@ -1,555 +1,294 @@
 import os
-import io
-import cv2
-import asyncio
-import threading
-from PIL import Image
-from flask import Flask
+import requests
 import discord
 from discord.ext import commands
-from discord.ui import Button, View
+from gtts import gTTS
+from PIL import Image, ImageDraw, ImageFont
+from moviepy.editor import VideoFileClip
+from google import genai
 
-# Thư viện gTTS cho TTS
-try:
-    from gtts import gTTS
-    from gtts.lang import tts_langs
-    HAS_GTTS = True
-    SUPPORTED_LANGS = tts_langs()
-except ImportError:
-    HAS_GTTS = False
-    SUPPORTED_LANGS = {}
-
-# Thư viện SpeechRecognition & PyDub cho Tạo phụ đề
-try:
-    import speech_recognition as sr
-    from pydub import AudioSegment
-    HAS_STT = True
-except ImportError:
-    HAS_STT = False
-
-# ==========================================
-# 1. LOAD OPUS CHO VOICE CHANNEL (DOCKER/LINUX)
-# ==========================================
-if not discord.opus.is_loaded():
-    for opus_lib in ['libopus.so.0', 'libopus.so', '/usr/lib/x86_64-linux-gnu/libopus.so.0']:
-        try:
-            discord.opus.load_opus(opus_lib)
-            print(f"-> Đã load Opus thành công: {opus_lib}")
-            break
-        except Exception:
-            pass
-
-# ==========================================
-# 2. WEB SERVER GIỮ BOT ONLINE 24/7
-# ==========================================
-app = Flask(__name__)
-
-@app.route('/')
-def home():
-    return "All-in-One Discord Bot is Online!"
-
-def run_flask():
-    port = int(os.environ.get("PORT", 10000))
-    app.run(host='0.0.0.0', port=port)
-
-# ==========================================
-# 3. KHỞI TẠO DISCORD BOT & HÀNG CHỜ NHẠC
-# ==========================================
+# Khai báo Intents
 intents = discord.Intents.default()
 intents.message_content = True
-intents.voice_states = True
+bot = commands.Bot(command_prefix="!", intents=intents)
 
-bot = commands.Bot(command_prefix=["!", "/"], intents=intents, help_command=None)
+# Khởi tạo Client Gemini
+gemini_client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
 
-music_queues = {}
-is_looping = {}
-current_track = {}
+# ==========================================
+# CẤU HÌNH GITHUB REPO & CẤU TRÚC THƯ MỤC
+# ==========================================
+REPO_LINK = "https://github.com/binhannguyen961-byte/Sentry_nguyen/tree/main"
+RAW_GITHUB_BASE = "https://raw.githubusercontent.com/binhannguyen961-byte/Sentry_nguyen/main/assets"
 
-def get_queue(guild_id):
-    if guild_id not in music_queues:
-        music_queues[guild_id] = []
-    return music_queues[guild_id]
+LINK_GOOD_LUCK_DIGGER = "https://x.com/felenopy_/status/2094876317472739524?s=46"
+LINK_DEVNOTE = "https://x.com/thetruthisalies/status/2095092376071290952?s=46"
 
+ASSETS_DIR = "game_01"
+os.makedirs(ASSETS_DIR, exist_ok=True)
+
+# Danh sách tài nguyên cần đồng bộ từ Repo
+REQUIRED_ASSETS = [
+    "meltdown_ending.png",
+    "mirror_0.png",
+    "room_background.png",
+    "starting_sence.png",
+    "walking_01.png",
+    "bg_music.mp3",
+    "jumpscare.mp4"  # Video cho hiệu ứng chuyển đổi GIF
+]
+
+game_state = {
+    "mirror_clicks": 0,
+    "is_night_mode": False
+}
+
+# ==========================================
+# 1. TỰ ĐỘNG TẢI ASSETS TỪ REPO GITHUB
+# ==========================================
+def sync_assets_from_repo():
+    print("🔄 Đang đồng bộ tài nguyên từ GitHub Repo...")
+    for filename in REQUIRED_ASSETS:
+        local_path = os.path.join(ASSETS_DIR, filename)
+        if not os.path.exists(local_path):
+            file_url = f"{RAW_GITHUB_BASE}/{filename}"
+            print(f"📥 Đang tải: {filename}...")
+            try:
+                res = requests.get(file_url, timeout=15)
+                if res.status_code == 200:
+                    with open(local_path, "wb") as f:
+                        f.write(res.content)
+                    print(f"✅ Đã tải xong: {filename}")
+                else:
+                    print(f"⚠️ Không tìm thấy {filename} (HTTP {res.status_code})")
+            except Exception as e:
+                print(f"❌ Lỗi tải {filename}: {e}")
+
+# ==========================================
+# 2. XỬ LÝ CHUYỂN MP4 SANG GIF LITE (MOVIEPY)
+# ==========================================
+def convert_mp4_to_lowres_gif(mp4_filename: str, output_gif_name: str, width: int = 480, fps: int = 12) -> str:
+    input_path = os.path.join(ASSETS_DIR, mp4_filename)
+    output_path = os.path.join(ASSETS_DIR, output_gif_name)
+
+    if os.path.exists(output_path):
+        return output_path
+
+    if os.path.exists(input_path):
+        print(f"🎬 Đang nén video {mp4_filename} sang GIF...")
+        try:
+            clip = VideoFileClip(input_path)
+            lowres = clip.resize(width=width)
+            lowres.write_gif(output_path, fps=fps, program='ffmpeg', opt='optimizeplus')
+            clip.close()
+            print(f"✅ Đã chuyển đổi thành công: {output_gif_name}")
+            return output_path
+        except Exception as e:
+            print(f"❌ Lỗi chuyển đổi MP4 sang GIF: {e}")
+            return None
+    return None
+
+# ==========================================
+# 3. HÀM TẠO KHUNG CHAT BẰNG PILLOW
+# ==========================================
+def create_chat_frame(username: str, message_text: str, bg_image_name: str) -> str:
+    output_path = os.path.join(ASSETS_DIR, "generated_chat.jpg")
+    bg_image_path = os.path.join(ASSETS_DIR, bg_image_name)
+
+    if os.path.exists(bg_image_path):
+        base_img = Image.open(bg_image_path).convert("RGBA")
+    else:
+        base_img = Image.new("RGBA", (800, 600), (30, 30, 30, 255))
+
+    base_img = base_img.resize((800, 600))
+    overlay = Image.new("RGBA", base_img.size, (0, 0, 0, 0))
+    draw = ImageDraw.Draw(overlay)
+
+    # Khung thoại Discord
+    draw.rounded_rectangle([40, 420, 760, 560], radius=15, fill=(32, 34, 37, 220), outline=(88, 101, 242, 255), width=2)
+    draw.ellipse([55, 435, 105, 485], fill=(88, 101, 242, 255))
+    
+    try:
+        font_title = ImageFont.truetype("arial.ttf", 20)
+        font_text = ImageFont.truetype("arial.ttf", 16)
+    except IOError:
+        font_title = ImageFont.load_default()
+        font_text = ImageFont.load_default()
+
+    draw.text((120, 440), f"{username} [SYSTEM]", fill=(255, 255, 255, 255), font=font_title)
+    wrapped_text = message_text if len(message_text) < 60 else message_text[:57] + "..."
+    draw.text((120, 475), wrapped_text, fill=(220, 221, 222, 255), font=font_text)
+
+    final_img = Image.alpha_composite(base_img, overlay)
+    final_img.convert("RGB").save(output_path, "JPEG", quality=90)
+    return output_path
+
+# ==========================================
+# 4. HÀM XỬ LÝ TTS & VOICE
+# ==========================================
+def generate_tts_audio(text: str, filename: str = "dialogue.mp3") -> str:
+    filepath = os.path.join(ASSETS_DIR, filename)
+    tts = gTTS(text=text, lang='en', tld='co.uk', slow=False)
+    tts.save(filepath)
+    return filepath
+
+async def play_tts_in_voice(ctx, audio_path: str):
+    if ctx.voice_client and ctx.voice_client.is_connected():
+        if ctx.voice_client.is_playing():
+            ctx.voice_client.stop()
+        source = discord.FFmpegPCMAudio(audio_path)
+        ctx.voice_client.play(source)
+
+# ==========================================
+# 5. BẮT ĐẦU CÁC LỆNH BOT
+# ==========================================
 @bot.event
 async def on_ready():
-    print(f"-> Bot đã sẵn sàng hoạt động với tên: {bot.user}")
+    sync_assets_from_repo()
+    print(f"🚀 Bot Sentry [{bot.user.name}] đã chạy sẵn sàng!")
 
-# ==========================================
-# 4. VIEW NÚT BẤM ĐIỀU KHIỂN MP3 (DISCORD UI)
-# ==========================================
-class MusicPlayerView(View):
-    def __init__(self, ctx):
-        super().__init__(timeout=None)
-        self.ctx = ctx
-
-    @discord.ui.button(label="⏯️ Play/Pause", style=discord.ButtonStyle.primary)
-    async def btn_play_pause(self, interaction: discord.Interaction, button: Button):
-        vc = interaction.guild.voice_client
-        if not vc:
-            await interaction.response.send_message("❌ Bot không ở trong Voice Channel!", ephemeral=True)
-            return
-
-        if vc.is_paused():
-            vc.resume()
-            await interaction.response.send_message("▶️ Đã tiếp tục phát!", ephemeral=True)
-        elif vc.is_playing():
-            vc.pause()
-            await interaction.response.send_message("⏸️ Đã tạm dừng!", ephemeral=True)
-        else:
-            await interaction.response.send_message("❌ Không có bài hát nào đang phát!", ephemeral=True)
-
-    @discord.ui.button(label="⏭️ Skip", style=discord.ButtonStyle.secondary)
-    async def btn_skip(self, interaction: discord.Interaction, button: Button):
-        vc = interaction.guild.voice_client
-        if not vc or not vc.is_playing():
-            await interaction.response.send_message("❌ Không có bài hát nào để bỏ qua!", ephemeral=True)
-            return
-
-        vc.stop()
-        await interaction.response.send_message("⏭️ Đã bỏ qua bài hiện tại!", ephemeral=True)
-
-    @discord.ui.button(label="🔁 Loop", style=discord.ButtonStyle.success)
-    async def btn_loop(self, interaction: discord.Interaction, button: Button):
-        guild_id = interaction.guild.id
-        is_looping[guild_id] = not is_looping.get(guild_id, False)
-        status = "BẬT 🔁" if is_looping[guild_id] else "TẮT 🔄"
-        await interaction.response.send_message(f"🔁 Chế độ lặp lại: **{status}**", ephemeral=True)
-
-    @discord.ui.button(label="⏹️ Stop", style=discord.ButtonStyle.danger)
-    async def btn_stop(self, interaction: discord.Interaction, button: Button):
-        guild_id = interaction.guild.id
-        queue = get_queue(guild_id)
-        queue.clear()
-        is_looping[guild_id] = False
-
-        vc = interaction.guild.voice_client
-        if vc:
-            vc.stop()
-            await vc.disconnect()
-
-        await interaction.response.send_message("⏹️ Đã dừng phát, xóa hàng chờ và thoát Voice!", ephemeral=True)
-
-# ==========================================
-# 5. ENGINE PHÁT MP3
-# ==========================================
-def play_next_track(ctx):
-    guild_id = ctx.guild.id
-    queue = get_queue(guild_id)
-    vc = ctx.voice_client
-
-    if not vc:
-        return
-
-    if is_looping.get(guild_id, False) and guild_id in current_track:
-        song_info = current_track[guild_id]
-    elif len(queue) > 0:
-        song_info = queue.pop(0)
-        current_track[guild_id] = song_info
+@bot.command(name="join")
+async def join_voice(ctx):
+    if ctx.author.voice:
+        channel = ctx.author.voice.channel
+        await channel.connect()
+        await ctx.send(f"🔊 Đã vào Voice Channel: `{channel.name}`")
     else:
-        current_track.pop(guild_id, None)
-        return
+        await ctx.send("❌ Bạn cần tham gia phòng Voice trước!")
 
-    file_path = song_info['path']
-    song_title = song_info['title']
+@bot.command(name="leave")
+async def leave_voice(ctx):
+    if ctx.voice_client:
+        await ctx.voice_client.disconnect()
+        await ctx.send("🔇 Đã ngắt kết nối khỏi phòng Voice.")
 
-    audio_source = discord.FFmpegPCMAudio(file_path, executable="ffmpeg")
-    vc.play(audio_source, after=lambda e: play_next_track(ctx))
-
-    embed = discord.Embed(
-        title="🎶 ĐANG PHÁT NHẠC MP3",
-        description=f"🎵 **Bài hát:** `{song_title}`\n👤 **Yêu cầu bởi:** {song_info['requester'].mention}",
-        color=discord.Color.blue()
-    )
+@bot.command(name="playbg")
+async def play_background_music(ctx):
+    if not ctx.voice_client:
+        await ctx.invoke(join_voice)
     
-    view = MusicPlayerView(ctx)
-    asyncio.run_coroutine_threadsafe(ctx.send(embed=embed, view=view), bot.loop)
-
-# ==========================================
-# 6. LỆNH PHÁT NHẠC MP3 (!add, !queue)
-# ==========================================
-@bot.command(name="add")
-async def add_mp3(ctx):
-    if not ctx.author.voice or not ctx.author.voice.channel:
-        await ctx.send("❌ Cậu phải vào một Voice Channel trước khi dùng lệnh `!add`!")
-        return
-
-    if not ctx.message.attachments:
-        await ctx.send("❌ Cậu hãy gửi kèm một file nhạc (.mp3) cùng với lệnh `!add`!")
-        return
-
-    attachment = ctx.message.attachments[0]
-    if not attachment.filename.lower().endswith('.mp3'):
-        await ctx.send("❌ Chỉ hỗ trợ định dạng file nhạc `.mp3`!")
-        return
-
-    user_channel = ctx.author.voice.channel
-    vc = ctx.voice_client
-
-    if vc is None:
-        vc = await user_channel.connect()
-    elif vc.channel != user_channel:
-        await vc.move_to(user_channel)
-
-    if not os.path.exists("temp_audio"):
-        os.makedirs("temp_audio")
-
-    file_path = f"temp_audio/{ctx.guild.id}_{attachment.id}_{attachment.filename}"
-    await attachment.save(file_path)
-
-    song_info = {
-        'title': attachment.filename,
-        'path': file_path,
-        'requester': ctx.author
-    }
-
-    queue = get_queue(ctx.guild.id)
-
-    if not vc.is_playing() and not vc.is_paused():
-        queue.append(song_info)
-        play_next_track(ctx)
+    bg_path = os.path.join(ASSETS_DIR, "bg_music.mp3")
+    if os.path.exists(bg_path):
+        if ctx.voice_client.is_playing():
+            ctx.voice_client.stop()
+            
+        ffmpeg_options = {'options': '-stream_loop -1'}
+        source = discord.FFmpegPCMAudio(bg_path, **ffmpeg_options)
+        ctx.voice_client.play(source)
+        await ctx.send("🎶 Đang phát nhạc nền không khí từ Repo...")
     else:
-        queue.append(song_info)
-        await ctx.send(f"➕ Đã thêm **`{attachment.filename}`** vào hàng chờ (Vị trí #{len(queue)})!")
+        await ctx.send("❌ Không tìm thấy `bg_music.mp3`!")
 
-@bot.command(name="queue", aliases=["q"])
-async def show_queue(ctx):
-    queue = get_queue(ctx.guild.id)
-    guild_id = ctx.guild.id
-
-    embed = discord.Embed(title="📜 HÀNG CHỜ NHẠC MP3", color=discord.Color.purple())
-
-    if guild_id in current_track:
-        loop_status = " (🔁 Loop)" if is_looping.get(guild_id, False) else ""
-        embed.add_field(
-            name="🔊 Đang phát:",
-            value=f"`{current_track[guild_id]['title']}`{loop_status}",
-            inline=False
-        )
-
-    if len(queue) == 0:
-        embed.add_field(name="📋 Hàng chờ tiếp theo:", value="*Hàng chờ đang trống*", inline=False)
-    else:
-        queue_text = ""
-        for idx, song in enumerate(queue, start=1):
-            queue_text += f"**{idx}.** `{song['title']}` - Yêu cầu bởi {song['requester'].mention}\n"
-        embed.add_field(name="📋 Hàng chờ tiếp theo:", value=queue_text, inline=False)
-
-    await ctx.send(embed=embed)
-
-# ==========================================
-# 7. LỆNH TỰ ĐỘNG TẠO PHỤ ĐỀ TIẾNG VIỆT (!sub / !subtitle)
-# ==========================================
-def generate_subtitles_from_audio(mp3_path):
-    if not HAS_STT:
-        return None, "Thư viện `SpeechRecognition` hoặc `pydub` chưa được cài đặt!"
-
-    try:
-        wav_path = mp3_path.rsplit(".", 1)[0] + ".wav"
-        sound = AudioSegment.from_file(mp3_path)
-        sound.export(wav_path, format="wav")
-
-        recognizer = sr.Recognizer()
-        with sr.AudioFile(wav_path) as source:
-            audio_data = recognizer.record(source)
-            text = recognizer.recognize_google(audio_data, language="vi-VN")
-
-        if os.path.exists(wav_path):
-            os.remove(wav_path)
-
-        srt_path = mp3_path.rsplit(".", 1)[0] + ".srt"
-        with open(srt_path, "w", encoding="utf-8") as f:
-            f.write("1\n00:00:00,000 --> 00:01:00,000\n" + text + "\n")
-
-        return text, srt_path
-
-    except sr.UnknownValueError:
-        return None, "Không nhận diện được giọng nói trong file âm thanh này."
-    except sr.RequestError as e:
-        return None, f"Lỗi kết nối tới dịch vụ nhận diện: {e}"
-    except Exception as e:
-        return None, f"Lỗi xử lý file âm thanh: {e}"
-
-@bot.command(name="sub", aliases=["subtitle", "phude"])
-async def create_subtitle(ctx):
-    if not ctx.message.attachments:
-        await ctx.send("❌ Cậu hãy gửi kèm một file âm thanh (`.mp3` hoặc `.wav`) cùng với lệnh `!sub`!")
+@bot.command(name="start")
+async def start_game(ctx, repo: str = None):
+    if not repo or repo.strip() != REPO_LINK:
+        await ctx.send("❌ Link Repository không hợp lệ!")
         return
 
-    attachment = ctx.message.attachments[0]
-    if not attachment.filename.lower().endswith(('.mp3', '.wav', '.m4a')):
-        await ctx.send("❌ Chỉ hỗ trợ các file âm thanh (`.mp3`, `.wav`, `.m4a`)!")
-        return
-
-    status_msg = await ctx.send("⏳ *Đang lắng nghe và trích xuất phụ đề Tiếng Việt... Vui lòng chờ!*")
-
-    if not os.path.exists("temp_audio"):
-        os.makedirs("temp_audio")
-
-    temp_path = f"temp_audio/sub_{attachment.id}_{attachment.filename}"
-    await attachment.save(temp_path)
-
-    loop = asyncio.get_event_loop()
-    text, srt_file = await loop.run_in_executor(None, generate_subtitles_from_audio, temp_path)
-
-    if text:
-        embed = discord.Embed(
-            title="📝 KẾT QUẢ TRÍCH XUẤT PHỤ ĐỀ TIẾNG VIỆT",
-            description=f"```text\n{text}\n```",
-            color=discord.Color.teal()
-        )
-        if srt_file and os.path.exists(srt_file):
-            file = discord.File(srt_file, filename="phu_de_tieng_viet.srt")
-            await status_msg.edit(content="✅ **Đã tạo xong phụ đề!**", embed=embed)
-            await ctx.send(file=file)
-            os.remove(srt_file)
-        else:
-            await status_msg.edit(content="✅ **Đã nhận diện văn bản:**", embed=embed)
-    else:
-        await status_msg.edit(content=f"❌ **Không thể tạo phụ đề:** {srt_file}")
-
-    if os.path.exists(temp_path):
-        os.remove(temp_path)
-
-# ==========================================
-# 8. LỆNH TTS ĐỌC GIỌNG NÓI + NHẠC NỀN (!tts)
-# ==========================================
-@bot.command(name="tts")
-async def text_to_speech(ctx, *, args: str = None):
-    if not HAS_GTTS:
-        await ctx.send("❌ Thư viện `gTTS` chưa được cài đặt trong `requirements.txt`!")
-        return
-
-    if not ctx.author.voice or not ctx.author.voice.channel:
-        await ctx.send("❌ Cậu phải tham gia vào Voice Channel trước!")
-        return
-
-    if not args:
-        await ctx.send(
-            "❌ **Vui lòng nhập nội dung cần đọc!**\n"
-            "• Đọc tiếng Việt: `!tts <nội dung>` (Ví dụ: `!tts Xin chào`)\n"
-            "• Chọn ngôn ngữ khác: `!tts <mã_ngôn_ngữ> <nội dung>` (Ví dụ: `!tts en Hello`)\n"
-            "*(Có thể đính kèm file .mp3 để làm nhạc nền)*"
-        )
-        return
-
-    # Tách mã ngôn ngữ nếu người dùng chỉ định
-    split_args = args.split(maxsplit=1)
-    first_word = split_args[0].lower()
-
-    if first_word in SUPPORTED_LANGS and len(split_args) > 1:
-        lang_code = first_word
-        text_content = split_args[1]
-    else:
-        lang_code = "vi"
-        text_content = args
-
-    user_channel = ctx.author.voice.channel
-    vc = ctx.voice_client
-
-    if vc is None:
-        vc = await user_channel.connect()
-    elif vc.channel != user_channel:
-        await vc.move_to(user_channel)
-
-    if vc.is_playing():
-        vc.stop()
-
-    if not os.path.exists("temp_audio"):
-        os.makedirs("temp_audio")
-
-    tts_path = f"temp_audio/tts_{ctx.author.id}.mp3"
-
-    try:
-        tts = gTTS(text=text_content, lang=lang_code, slow=False)
-        tts.save(tts_path)
-    except Exception as e:
-        await ctx.send(f"❌ Lỗi tạo TTS (Kiểm tra mã ngôn ngữ `{lang_code}`): {e}")
-        return
-
-    bg_music_path = None
-    if ctx.message.attachments:
-        attachment = ctx.message.attachments[0]
-        if attachment.filename.lower().endswith('.mp3'):
-            bg_music_path = f"temp_audio/bg_{attachment.id}_{attachment.filename}"
-            await attachment.save(bg_music_path)
-
-    if bg_music_path:
-        ffmpeg_options = {
-            'options': f'-i "{bg_music_path}" -filter_complex "[0:a]volume=1.6[voice];[1:a]volume=0.25[bg];[voice][bg]amix=inputs=2:duration=first[out]" -map "[out]"'
-        }
-        audio_source = discord.FFmpegPCMAudio(tts_path, executable="ffmpeg", **ffmpeg_options)
-        await ctx.send(f"🗣️ **Đang đọc TTS (`{lang_code}`) kèm Nhạc nền:** `{text_content}`")
-    else:
-        audio_source = discord.FFmpegPCMAudio(tts_path, executable="ffmpeg")
-        await ctx.send(f"🗣️ **Đang đọc TTS (`{lang_code}`):** `{text_content}`")
-
-    def after_playing(error):
-        if os.path.exists(tts_path):
-            os.remove(tts_path)
-        if bg_music_path and os.path.exists(bg_music_path):
-            os.remove(bg_music_path)
-
-    vc.play(audio_source, after=after_playing)
-
-# ==========================================
-# 9. HÀM TÁCH VIDEO THÀNH GIF (!process)
-# ==========================================
-def process_video_to_gifs(video_path, chunk_duration=10, target_fps=8):
-    cap = cv2.VideoCapture(video_path)
-    if not cap.isOpened():
-        return None, "Không thể đọc file video!"
-
-    fps = cap.get(cv2.CAP_PROP_FPS)
-    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    duration = total_frames / fps if fps > 0 else 0
-
-    if duration > 61:
-        cap.release()
-        return None, "Video vượt quá giới hạn 1 phút!"
-
-    frames_per_chunk = int(fps * chunk_duration)
-    frame_interval = max(1, int(fps / target_fps))
+    game_state["mirror_clicks"] = 0
+    dialogue = "The truth is a lie. Welcome to the abandoned house."
     
-    gif_buffers = []
-    current_frame = 0
-    chunk_index = 1
+    chat_img_path = create_chat_frame("SYSTEM", dialogue, "starting_sence.png")
+    audio_path = generate_tts_audio(dialogue, "start.mp3")
 
-    while cap.isOpened():
-        chunk_frames = []
-        chunk_end_frame = current_frame + frames_per_chunk
+    await play_tts_in_voice(ctx, audio_path)
 
-        while current_frame < chunk_end_frame and cap.isOpened():
-            ret, frame = cap.read()
-            if not ret:
-                break
+    files = [
+        discord.File(chat_img_path, filename="scene.jpg"),
+        discord.File(audio_path, filename="voice.mp3")
+    ]
+    await ctx.send(files=files)
 
-            if current_frame % frame_interval == 0:
-                frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                pil_img = Image.fromarray(frame_rgb)
-                pil_img = pil_img.resize((360, 202), Image.Resampling.BILINEAR)
-                pil_img = pil_img.convert("P", palette=Image.Palette.ADAPTIVE, colors=128)
-                chunk_frames.append(pil_img)
+@bot.command(name="look")
+async def look_around(ctx):
+    game_state["mirror_clicks"] += 1
+    clicks = game_state["mirror_clicks"]
 
-            current_frame += 1
+    if clicks < 8:
+        dialogue = f"You stare into the mirror on the floor. Count {clicks}."
+        bg_name = "mirror_0.png"
+    else:
+        dialogue = "Identity meltdown detected. Enter code 4099."
+        bg_name = "meltdown_ending.png"
 
-        if chunk_frames:
-            buf = io.BytesIO()
-            chunk_frames[0].save(
-                buf,
-                format="GIF",
-                save_all=True,
-                append_images=chunk_frames[1:],
-                duration=int(1000 / target_fps),
-                loop=0,
-                optimize=True
-            )
-            buf.seek(0)
-            gif_buffers.append((f"part_{chunk_index}.gif", buf))
-            chunk_index += 1
-        else:
-            break
+    chat_img_path = create_chat_frame("MIRROR", dialogue, bg_name)
+    audio_path = generate_tts_audio(dialogue, f"look_{clicks}.mp3")
 
-    cap.release()
-    return gif_buffers, None
+    await play_tts_in_voice(ctx, audio_path)
 
-@bot.command(name="process", aliases=["convert", "gif"])
-async def process_media(ctx):
-    if not ctx.author.voice or not ctx.author.voice.channel:
-        await ctx.send("❌ Cậu phải tham gia vào Voice Channel trước!")
+    files = [
+        discord.File(chat_img_path, filename="scene.jpg"),
+        discord.File(audio_path, filename="voice.mp3")
+    ]
+    await ctx.send(files=files)
+
+@bot.command(name="write")
+async def write_command(ctx, *, code: str = None):
+    if not code:
+        await ctx.send("❌ Nhập mã kèm theo!")
         return
 
-    if not ctx.message.attachments:
-        await ctx.send("❌ Cậu hãy gửi kèm một file video (.mp4, .mov, .mkv)!")
+    code_clean = code.strip().lower()
+
+    if code_clean == "an09328":
+        dialogue = "Good luck digger. Link unlocked."
+        audio_path = generate_tts_audio(dialogue, "an.mp3")
+        await play_tts_in_voice(ctx, audio_path)
+        await ctx.send(content=f"🔗 {LINK_GOOD_LUCK_DIGGER}", file=discord.File(audio_path))
         return
 
-    attachment = ctx.message.attachments[0]
-    if not attachment.filename.lower().endswith(('.mp4', '.mov', '.mkv')):
-        await ctx.send("❌ Chỉ hỗ trợ định dạng video (.mp4, .mov, .mkv)!")
+    if code_clean == "devnote":
+        dialogue = "Devnote accessed. Remember 2007."
+        audio_path = generate_tts_audio(dialogue, "dev.mp3")
+        await play_tts_in_voice(ctx, audio_path)
+        await ctx.send(content=f"📝 {LINK_DEVNOTE}", file=discord.File(audio_path))
         return
 
-    status_msg = await ctx.send("⏳ *Đang tải và xử lý video... Vui lòng chờ!*")
-    temp_video_path = f"temp_{ctx.author.id}_{int(asyncio.get_event_loop().time())}_{attachment.filename}"
-    await attachment.save(temp_video_path)
+    # Kịch bản MP4 sang GIF Jumpscare
+    if code_clean == "6107":
+        gif_path = convert_mp4_to_lowres_gif("jumpscare.mp4", "jumpscare_lowres.gif", width=480, fps=12)
+        if gif_path:
+            dialogue = "IT IS BEHIND YOU."
+            audio_path = generate_tts_audio(dialogue, "scare.mp3")
+            await play_tts_in_voice(ctx, audio_path)
 
-    try:
-        loop = asyncio.get_event_loop()
-        gif_list, err = await loop.run_in_executor(None, process_video_to_gifs, temp_video_path)
-
-        if err:
-            await status_msg.edit(content=f"❌ Lỗi: {err}")
+            embed = discord.Embed(title="⚠️ CRITICAL SIGNAL DETECTED", color=discord.Color.dark_red())
+            embed.set_image(url="attachment://jumpscare.gif")
+            
+            files = [
+                discord.File(gif_path, filename="jumpscare.gif"),
+                discord.File(audio_path, filename="voice.mp3")
+            ]
+            await ctx.send(embed=embed, files=files)
             return
 
-        user_channel = ctx.author.voice.channel
-        vc = ctx.voice_client
-
-        if vc is None:
-            vc = await user_channel.connect()
-        elif vc.channel != user_channel:
-            await vc.move_to(user_channel)
-
-        if vc.is_playing():
-            vc.stop()
-
-        ffmpeg_options = {'options': '-af "adelay=3000|3000"'}
-        audio_source = discord.FFmpegPCMAudio(temp_video_path, executable="ffmpeg", **ffmpeg_options)
-        vc.play(audio_source)
-
-        total_parts = len(gif_list)
-        current_msg = status_msg
-
-        for index, (gif_name, gif_buf) in enumerate(gif_list, start=1):
-            file = discord.File(fp=gif_buf, filename=gif_name)
-            embed = discord.Embed(
-                title="🎬 TRÌNH CHIẾU MEDIA",
-                description=f"**Đang phát phân đoạn:** `[{index}/{total_parts}]` *(Âm thanh delay 3s)*",
-                color=discord.Color.gold()
-            )
-            embed.set_image(url=f"attachment://{gif_name}")
-
-            if current_msg and current_msg != status_msg:
-                try:
-                    await current_msg.delete()
-                except Exception:
-                    pass
-
-            current_msg = await ctx.send(embed=embed, file=file)
-            gif_buf.close()
-
-            if index < total_parts:
-                await asyncio.sleep(10)
-
-        final_embed = discord.Embed(
-            title="✅ TRÌNH CHIẾU HOÀN TẤT",
-            description=f"Đã phát xong toàn bộ **{total_parts}** phân đoạn GIF!",
-            color=discord.Color.green()
+    # MÃ LẠ/KHÔNG KHỚP: Gọi Gemini phản hồi luyên thuyên + mốc 2007
+    try:
+        prompt = (
+            f"Bạn là một nhân vật kỳ dị trong game tâm lý kinh dị ARG. "
+            f"Người chơi vừa gõ mã '{code}'. Hãy trả lời luyên thuyên,vô định,không rõ bản thân là ai bối cảnh hiện tại là đâu mang lại trải nghiệm vô định trống rỗng "
+            f"thi thoảng lái sang chủ đề khác nhưng thường xuyên phải nhắc tới con số 2007. "
+            f"Trả lời ngắn gọn bằng tiếng Anh."
         )
-        await current_msg.edit(embed=final_embed)
+        response = gemini_client.models.generate_content(
+            model="gemini-3.6-flash",
+            contents=prompt
+        )
+        ai_reply = response.text.strip()
+        
+        chat_img = create_chat_frame("STRANGER", ai_reply, "walking_01.png")
+        audio_path = generate_tts_audio(ai_reply, "ai_reply.mp3")
 
+        await play_tts_in_voice(ctx, audio_path)
+
+        files = [
+            discord.File(chat_img, filename="scene.jpg"),
+            discord.File(audio_path, filename="voice.mp3")
+        ]
+        await ctx.send(files=files)
     except Exception as e:
-        await ctx.send(f"❌ Lỗi xử lý: {e}")
-    finally:
-        if os.path.exists(temp_video_path):
-            os.remove(temp_video_path)
+        await ctx.send("❌ Dữ liệu mã nhiễu sóng...")
 
-# ==========================================
-# 10. TỰ ĐỘNG NGẮT VOICE KHI PHÒNG TRỐNG
-# ==========================================
-@bot.event
-async def on_voice_state_update(member, before, after):
-    for vc in bot.voice_clients:
-        if len(vc.channel.members) == 1:
-            await vc.disconnect()
-
-# ==========================================
-# 11. KHỞI CHẠY BOT
-# ==========================================
 if __name__ == "__main__":
-    t_flask = threading.Thread(target=run_flask)
-    t_flask.daemon = True
-    t_flask.start()
-
-    token = os.environ.get("DISCORD_TOKEN")
-    if token:
-        bot.run(token)
-    else:
-        print("Lỗi: Chưa thiết lập DISCORD_TOKEN trong Environment Variables!")
+    TOKEN = os.getenv("DISCORD_TOKEN", "YOUR_BOT_TOKEN_HERE")
+    bot.run(TOKEN)
