@@ -12,9 +12,12 @@ from discord.ui import Button, View
 # Thư viện gTTS cho TTS
 try:
     from gtts import gTTS
+    from gtts.lang import tts_langs
     HAS_GTTS = True
+    SUPPORTED_LANGS = tts_langs()
 except ImportError:
     HAS_GTTS = False
+    SUPPORTED_LANGS = {}
 
 # Thư viện SpeechRecognition & PyDub cho Tạo phụ đề
 try:
@@ -25,7 +28,7 @@ except ImportError:
     HAS_STT = False
 
 # ==========================================
-# 1. LOAD OPUS CHO VOICE CHANNEL (DOCKER)
+# 1. LOAD OPUS CHO VOICE CHANNEL (DOCKER/LINUX)
 # ==========================================
 if not discord.opus.is_loaded():
     for opus_lib in ['libopus.so.0', 'libopus.so', '/usr/lib/x86_64-linux-gnu/libopus.so.0']:
@@ -69,7 +72,7 @@ def get_queue(guild_id):
 
 @bot.event
 async def on_ready():
-    print(f"-> Bot đã sẵn sàng hoạt động: {bot.user}")
+    print(f"-> Bot đã sẵn sàng hoạt động với tên: {bot.user}")
 
 # ==========================================
 # 4. VIEW NÚT BẤM ĐIỀU KHIỂN MP3 (DISCORD UI)
@@ -237,15 +240,10 @@ async def show_queue(ctx):
 # 7. LỆNH TỰ ĐỘNG TẠO PHỤ ĐỀ TIẾNG VIỆT (!sub / !subtitle)
 # ==========================================
 def generate_subtitles_from_audio(mp3_path):
-    """
-    Chuyển đổi MP3 sang WAV và nhận diện giọng nói Tiếng Việt bằng SpeechRecognition.
-    Trả về nội dung văn bản phụ đề và file .srt tạm thời.
-    """
     if not HAS_STT:
-        return None, "Thư viện `SpeechRecognition` hoặc `pydub` chưa được cài đặt trong requirements.txt!"
+        return None, "Thư viện `SpeechRecognition` hoặc `pydub` chưa được cài đặt!"
 
     try:
-        # Convert MP3 sang WAV tạm thời để đọc dữ liệu âm thanh
         wav_path = mp3_path.rsplit(".", 1)[0] + ".wav"
         sound = AudioSegment.from_file(mp3_path)
         sound.export(wav_path, format="wav")
@@ -253,14 +251,11 @@ def generate_subtitles_from_audio(mp3_path):
         recognizer = sr.Recognizer()
         with sr.AudioFile(wav_path) as source:
             audio_data = recognizer.record(source)
-            # Dùng Google Speech API nhận diện Tiếng Việt
             text = recognizer.recognize_google(audio_data, language="vi-VN")
 
-        # Xóa file WAV tạm
         if os.path.exists(wav_path):
             os.remove(wav_path)
 
-        # Tạo file phụ đề chuẩn SRT
         srt_path = mp3_path.rsplit(".", 1)[0] + ".srt"
         with open(srt_path, "w", encoding="utf-8") as f:
             f.write("1\n00:00:00,000 --> 00:01:00,000\n" + text + "\n")
@@ -276,7 +271,6 @@ def generate_subtitles_from_audio(mp3_path):
 
 @bot.command(name="sub", aliases=["subtitle", "phude"])
 async def create_subtitle(ctx):
-    """Lệnh nhận diện lời nói trong MP3 và xuất ra văn bản + file .srt"""
     if not ctx.message.attachments:
         await ctx.send("❌ Cậu hãy gửi kèm một file âm thanh (`.mp3` hoặc `.wav`) cùng với lệnh `!sub`!")
         return
@@ -320,7 +314,7 @@ async def create_subtitle(ctx):
 # 8. LỆNH TTS ĐỌC GIỌNG NÓI + NHẠC NỀN (!tts)
 # ==========================================
 @bot.command(name="tts")
-async def text_to_speech(ctx, lang_or_text: str = None, *, text_rest: str = None):
+async def text_to_speech(ctx, *, args: str = None):
     if not HAS_GTTS:
         await ctx.send("❌ Thư viện `gTTS` chưa được cài đặt trong `requirements.txt`!")
         return
@@ -329,16 +323,25 @@ async def text_to_speech(ctx, lang_or_text: str = None, *, text_rest: str = None
         await ctx.send("❌ Cậu phải tham gia vào Voice Channel trước!")
         return
 
-    if not lang_or_text:
-        await ctx.send("❌ Cậu phải nhập nội dung cần đọc! Ví dụ: `!tts Xin chào` hoặc `!tts en Hello` (Gửi kèm MP3 nếu muốn có nhạc nền).")
+    if not args:
+        await ctx.send(
+            "❌ **Vui lòng nhập nội dung cần đọc!**\n"
+            "• Đọc tiếng Việt: `!tts <nội dung>` (Ví dụ: `!tts Xin chào`)\n"
+            "• Chọn ngôn ngữ khác: `!tts <mã_ngôn_ngữ> <nội dung>` (Ví dụ: `!tts en Hello`)\n"
+            "*(Có thể đính kèm file .mp3 để làm nhạc nền)*"
+        )
         return
 
-    if text_rest:
-        lang_code = lang_or_text
-        text_content = text_rest
+    # Tách mã ngôn ngữ nếu người dùng chỉ định
+    split_args = args.split(maxsplit=1)
+    first_word = split_args[0].lower()
+
+    if first_word in SUPPORTED_LANGS and len(split_args) > 1:
+        lang_code = first_word
+        text_content = split_args[1]
     else:
         lang_code = "vi"
-        text_content = lang_or_text
+        text_content = args
 
     user_channel = ctx.author.voice.channel
     vc = ctx.voice_client
@@ -360,7 +363,7 @@ async def text_to_speech(ctx, lang_or_text: str = None, *, text_rest: str = None
         tts = gTTS(text=text_content, lang=lang_code, slow=False)
         tts.save(tts_path)
     except Exception as e:
-        await ctx.send(f"❌ Lỗi tạo TTS (Kiểm tra lại mã ngôn ngữ `{lang_code}`): {e}")
+        await ctx.send(f"❌ Lỗi tạo TTS (Kiểm tra mã ngôn ngữ `{lang_code}`): {e}")
         return
 
     bg_music_path = None
@@ -389,7 +392,7 @@ async def text_to_speech(ctx, lang_or_text: str = None, *, text_rest: str = None
     vc.play(audio_source, after=after_playing)
 
 # ==========================================
-# 9. HÀM TÁCH VIDEO THÀNH GIF (!process - FIX 413)
+# 9. HÀM TÁCH VIDEO THÀNH GIF (!process)
 # ==========================================
 def process_video_to_gifs(video_path, chunk_duration=10, target_fps=8):
     cap = cv2.VideoCapture(video_path)
