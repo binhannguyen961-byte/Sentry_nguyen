@@ -5,10 +5,24 @@ import asyncio
 import threading
 from PIL import Image
 from flask import Flask
-from gtts import gTTS
 import discord
 from discord.ext import commands
 from discord.ui import Button, View
+
+# Thư viện gTTS cho TTS
+try:
+    from gtts import gTTS
+    HAS_GTTS = True
+except ImportError:
+    HAS_GTTS = False
+
+# Thư viện SpeechRecognition & PyDub cho Tạo phụ đề
+try:
+    import speech_recognition as sr
+    from pydub import AudioSegment
+    HAS_STT = True
+except ImportError:
+    HAS_STT = False
 
 # ==========================================
 # 1. LOAD OPUS CHO VOICE CHANNEL (DOCKER)
@@ -36,7 +50,7 @@ def run_flask():
     app.run(host='0.0.0.0', port=port)
 
 # ==========================================
-# 3. KHỞI TẠO DISCORD BOT & BỘ NHỚ HÀNG CHỜ
+# 3. KHỞI TẠO DISCORD BOT & HÀNG CHỜ NHẠC
 # ==========================================
 intents = discord.Intents.default()
 intents.message_content = True
@@ -220,10 +234,97 @@ async def show_queue(ctx):
     await ctx.send(embed=embed)
 
 # ==========================================
-# 7. LỆNH TTS ĐỌC GIỌNG NÓI + NHẠC NỀN (!tts)
+# 7. LỆNH TỰ ĐỘNG TẠO PHỤ ĐỀ TIẾNG VIỆT (!sub / !subtitle)
+# ==========================================
+def generate_subtitles_from_audio(mp3_path):
+    """
+    Chuyển đổi MP3 sang WAV và nhận diện giọng nói Tiếng Việt bằng SpeechRecognition.
+    Trả về nội dung văn bản phụ đề và file .srt tạm thời.
+    """
+    if not HAS_STT:
+        return None, "Thư viện `SpeechRecognition` hoặc `pydub` chưa được cài đặt trong requirements.txt!"
+
+    try:
+        # Convert MP3 sang WAV tạm thời để đọc dữ liệu âm thanh
+        wav_path = mp3_path.rsplit(".", 1)[0] + ".wav"
+        sound = AudioSegment.from_file(mp3_path)
+        sound.export(wav_path, format="wav")
+
+        recognizer = sr.Recognizer()
+        with sr.AudioFile(wav_path) as source:
+            audio_data = recognizer.record(source)
+            # Dùng Google Speech API nhận diện Tiếng Việt
+            text = recognizer.recognize_google(audio_data, language="vi-VN")
+
+        # Xóa file WAV tạm
+        if os.path.exists(wav_path):
+            os.remove(wav_path)
+
+        # Tạo file phụ đề chuẩn SRT
+        srt_path = mp3_path.rsplit(".", 1)[0] + ".srt"
+        with open(srt_path, "w", encoding="utf-8") as f:
+            f.write("1\n00:00:00,000 --> 00:01:00,000\n" + text + "\n")
+
+        return text, srt_path
+
+    except sr.UnknownValueError:
+        return None, "Không nhận diện được giọng nói trong file âm thanh này."
+    except sr.RequestError as e:
+        return None, f"Lỗi kết nối tới dịch vụ nhận diện: {e}"
+    except Exception as e:
+        return None, f"Lỗi xử lý file âm thanh: {e}"
+
+@bot.command(name="sub", aliases=["subtitle", "phude"])
+async def create_subtitle(ctx):
+    """Lệnh nhận diện lời nói trong MP3 và xuất ra văn bản + file .srt"""
+    if not ctx.message.attachments:
+        await ctx.send("❌ Cậu hãy gửi kèm một file âm thanh (`.mp3` hoặc `.wav`) cùng với lệnh `!sub`!")
+        return
+
+    attachment = ctx.message.attachments[0]
+    if not attachment.filename.lower().endswith(('.mp3', '.wav', '.m4a')):
+        await ctx.send("❌ Chỉ hỗ trợ các file âm thanh (`.mp3`, `.wav`, `.m4a`)!")
+        return
+
+    status_msg = await ctx.send("⏳ *Đang lắng nghe và trích xuất phụ đề Tiếng Việt... Vui lòng chờ!*")
+
+    if not os.path.exists("temp_audio"):
+        os.makedirs("temp_audio")
+
+    temp_path = f"temp_audio/sub_{attachment.id}_{attachment.filename}"
+    await attachment.save(temp_path)
+
+    loop = asyncio.get_event_loop()
+    text, srt_file = await loop.run_in_executor(None, generate_subtitles_from_audio, temp_path)
+
+    if text:
+        embed = discord.Embed(
+            title="📝 KẾT QUẢ TRÍCH XUẤT PHỤ ĐỀ TIẾNG VIỆT",
+            description=f"```text\n{text}\n```",
+            color=discord.Color.teal()
+        )
+        if srt_file and os.path.exists(srt_file):
+            file = discord.File(srt_file, filename="phu_de_tieng_viet.srt")
+            await status_msg.edit(content="✅ **Đã tạo xong phụ đề!**", embed=embed)
+            await ctx.send(file=file)
+            os.remove(srt_file)
+        else:
+            await status_msg.edit(content="✅ **Đã nhận diện văn bản:**", embed=embed)
+    else:
+        await status_msg.edit(content=f"❌ **Không thể tạo phụ đề:** {srt_file}")
+
+    if os.path.exists(temp_path):
+        os.remove(temp_path)
+
+# ==========================================
+# 8. LỆNH TTS ĐỌC GIỌNG NÓI + NHẠC NỀN (!tts)
 # ==========================================
 @bot.command(name="tts")
 async def text_to_speech(ctx, lang_or_text: str = None, *, text_rest: str = None):
+    if not HAS_GTTS:
+        await ctx.send("❌ Thư viện `gTTS` chưa được cài đặt trong `requirements.txt`!")
+        return
+
     if not ctx.author.voice or not ctx.author.voice.channel:
         await ctx.send("❌ Cậu phải tham gia vào Voice Channel trước!")
         return
@@ -232,7 +333,6 @@ async def text_to_speech(ctx, lang_or_text: str = None, *, text_rest: str = None
         await ctx.send("❌ Cậu phải nhập nội dung cần đọc! Ví dụ: `!tts Xin chào` hoặc `!tts en Hello` (Gửi kèm MP3 nếu muốn có nhạc nền).")
         return
 
-    # Xử lý biến ngôn ngữ (Default là 'vi')
     if text_rest:
         lang_code = lang_or_text
         text_content = text_rest
@@ -257,14 +357,12 @@ async def text_to_speech(ctx, lang_or_text: str = None, *, text_rest: str = None
     tts_path = f"temp_audio/tts_{ctx.author.id}.mp3"
 
     try:
-        # Tạo giọng đọc từ các Variable
         tts = gTTS(text=text_content, lang=lang_code, slow=False)
         tts.save(tts_path)
     except Exception as e:
         await ctx.send(f"❌ Lỗi tạo TTS (Kiểm tra lại mã ngôn ngữ `{lang_code}`): {e}")
         return
 
-    # Kiểm tra đính kèm file nhạc nền MP3
     bg_music_path = None
     if ctx.message.attachments:
         attachment = ctx.message.attachments[0]
@@ -272,7 +370,6 @@ async def text_to_speech(ctx, lang_or_text: str = None, *, text_rest: str = None
             bg_music_path = f"temp_audio/bg_{attachment.id}_{attachment.filename}"
             await attachment.save(bg_music_path)
 
-    # Phát âm thanh trộn nhạc qua FFmpeg
     if bg_music_path:
         ffmpeg_options = {
             'options': f'-i "{bg_music_path}" -filter_complex "[0:a]volume=1.6[voice];[1:a]volume=0.25[bg];[voice][bg]amix=inputs=2:duration=first[out]" -map "[out]"'
@@ -292,7 +389,7 @@ async def text_to_speech(ctx, lang_or_text: str = None, *, text_rest: str = None
     vc.play(audio_source, after=after_playing)
 
 # ==========================================
-# 8. HÀM TÁCH VIDEO THÀNH GIF (!process)
+# 9. HÀM TÁCH VIDEO THÀNH GIF (!process - FIX 413)
 # ==========================================
 def process_video_to_gifs(video_path, chunk_duration=10, target_fps=8):
     cap = cv2.VideoCapture(video_path)
@@ -326,7 +423,6 @@ def process_video_to_gifs(video_path, chunk_duration=10, target_fps=8):
             if current_frame % frame_interval == 0:
                 frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                 pil_img = Image.fromarray(frame_rgb)
-                # Thu nhỏ 360x202 + nén 128 màu giúp file GIF siêu nhẹ (Tránh lỗi 413)
                 pil_img = pil_img.resize((360, 202), Image.Resampling.BILINEAR)
                 pil_img = pil_img.convert("P", palette=Image.Palette.ADAPTIVE, colors=128)
                 chunk_frames.append(pil_img)
@@ -433,7 +529,7 @@ async def process_media(ctx):
             os.remove(temp_video_path)
 
 # ==========================================
-# 9. TỰ ĐỘNG NGẮT VOICE KHI PHÒNG TRỐNG
+# 10. TỰ ĐỘNG NGẮT VOICE KHI PHÒNG TRỐNG
 # ==========================================
 @bot.event
 async def on_voice_state_update(member, before, after):
@@ -442,7 +538,7 @@ async def on_voice_state_update(member, before, after):
             await vc.disconnect()
 
 # ==========================================
-# 10. KHỞI CHẠY BOT
+# 11. KHỞI CHẠY BOT
 # ==========================================
 if __name__ == "__main__":
     t_flask = threading.Thread(target=run_flask)
