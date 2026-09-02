@@ -1,7 +1,8 @@
-discord.py
+discord.py[voice]
 opencv-python-headless
 Pillow
 Flask
 gTTS
 SpeechRecognition
 pydub
+PyNaCl
