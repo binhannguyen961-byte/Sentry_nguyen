@@ -1,552 +1,256 @@
 import os
 import io
-import cv2
+import math
 import asyncio
 import threading
-from PIL import Image
+from PIL import Image, ImageDraw, ImageFont
 from flask import Flask
 import discord
 from discord.ext import commands
 from discord.ui import Button, View
-
-# Thư viện gTTS cho TTS
-try:
-    from gtts import gTTS
-    HAS_GTTS = True
-except ImportError:
-    HAS_GTTS = False
-
-# Thư viện SpeechRecognition & PyDub cho Tạo phụ đề
-try:
-    import speech_recognition as sr
-    from pydub import AudioSegment
-    HAS_STT = True
-except ImportError:
-    HAS_STT = False
+import google.generativeai as genai
 
 # ==========================================
-# 1. LOAD OPUS CHO VOICE CHANNEL (DOCKER)
+# 1. TÍCH HỢP GEMINI AI & DISCORD SETUP
 # ==========================================
-if not discord.opus.is_loaded():
-    for opus_lib in ['libopus.so.0', 'libopus.so', '/usr/lib/x86_64-linux-gnu/libopus.so.0']:
-        try:
-            discord.opus.load_opus(opus_lib)
-            print(f"-> Đã load Opus thành công: {opus_lib}")
-            break
-        except Exception:
-            pass
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
+if GEMINI_API_KEY:
+    genai.configure(api_key=GEMINI_API_KEY)
+    ai_model = genai.GenerativeModel('gemini-1.5-flash')
+else:
+    ai_model = None
 
-# ==========================================
-# 2. WEB SERVER GIỮ BOT ONLINE 24/7
-# ==========================================
-app = Flask(__name__)
-
-@app.route('/')
-def home():
-    return "All-in-One Discord Bot is Online!"
-
-def run_flask():
-    port = int(os.environ.get("PORT", 10000))
-    app.run(host='0.0.0.0', port=port)
-
-# ==========================================
-# 3. KHỞI TẠO DISCORD BOT & HÀNG CHỜ NHẠC
-# ==========================================
 intents = discord.Intents.default()
 intents.message_content = True
-intents.voice_states = True
-
 bot = commands.Bot(command_prefix=["!", "/"], intents=intents, help_command=None)
 
-music_queues = {}
-is_looping = {}
-current_track = {}
-
-def get_queue(guild_id):
-    if guild_id not in music_queues:
-        music_queues[guild_id] = []
-    return music_queues[guild_id]
-
-@bot.event
-async def on_ready():
-    print(f"-> Bot đã sẵn sàng hoạt động: {bot.user}")
+# Web Server giữ Bot 24/7 (Deploy Render/Heroku)
+app = Flask(__name__)
+@app.route('/')
+def home(): return "Discord Military & Logic Engine Bot Online!"
+def run_flask(): app.run(host='0.0.0.0', port=int(os.environ.get("PORT", 10000)))
 
 # ==========================================
-# 4. VIEW NÚT BẤM ĐIỀU KHIỂN MP3 (DISCORD UI)
+# 2. KHUÔN MẪU HỆ THỐNG LOGIC & GIÁP (ENGINE)
 # ==========================================
-class MusicPlayerView(View):
-    def __init__(self, ctx):
+GRID_SIZE = 10
+
+# Khai báo loại khối (Block Types)
+AIR = 0
+STEEL_ARMOR = 1       # Giáp thép (100mm)
+COMPOSITE_ARMOR = 2   # Giáp phức hợp (250mm)
+ERA_ARMOR = 3         # Giáp phản ứng nổ ERA (Chống đạn HEAT)
+ENGINE = 4            # Động cơ xe
+AMMO_RACK = 5         # Hầm đạn (Trúng là nổ)
+
+# Cổng Logic Nâng Cấp
+LOGIC_AND = 10
+LOGIC_OR = 11
+LOGIC_NOT = 12
+LOGIC_NAND = 13
+LOGIC_NOR = 14
+LOGIC_XOR = 15
+LOGIC_SR_LATCH = 16   # Chốt SR (Lưu giữ trạng thái)
+SENSOR_LASER = 20     # Cảm biến Laser
+
+COLOR_MAP = {
+    AIR: (30, 30, 35),
+    STEEL_ARMOR: (120, 120, 130),
+    COMPOSITE_ARMOR: (70, 100, 140),
+    ERA_ARMOR: (200, 100, 30),
+    ENGINE: (220, 180, 50),
+    AMMO_RACK: (220, 40, 40),
+    LOGIC_AND: (0, 180, 200),
+    LOGIC_OR: (150, 0, 200),
+    LOGIC_NOT: (200, 200, 0),
+    LOGIC_NAND: (0, 100, 200),
+    LOGIC_NOR: (100, 0, 150),
+    LOGIC_XOR: (200, 0, 100),
+    LOGIC_SR_LATCH: (0, 200, 150),
+    SENSOR_LASER: (250, 50, 50)
+}
+
+class Block:
+    def __init__(self, b_type=AIR):
+        self.type = b_type
+        self.thickness_mm = 100 if b_type == STEEL_ARMOR else (250 if b_type == COMPOSITE_ARMOR else 0)
+        self.output_signal = False
+        self.latch_state = False  # Dùng riêng cho SR-Latch
+        self.health = 100
+
+class SandboxWorld:
+    def __init__(self):
+        self.grid = [[[Block(AIR) for _ in range(GRID_SIZE)] for _ in range(GRID_SIZE)] for _ in range(GRID_SIZE)]
+        self.current_slice = 0
+
+    def set_block(self, x, y, z, b_type):
+        if 0 <= x < GRID_SIZE and 0 <= y < GRID_SIZE and 0 <= z < GRID_SIZE:
+            self.grid[x][y][z] = Block(b_type)
+
+    def update_logic(self):
+        """Hệ thống cập nhật tín hiệu vi mạch Logic Gates Nâng Cấp"""
+        for x in range(GRID_SIZE):
+            for y in range(GRID_SIZE):
+                for z in range(GRID_SIZE):
+                    b = self.grid[x][y][z]
+                    in1 = self.grid[x-1][y][z].output_signal if x > 0 else False
+                    in2 = self.grid[x+1][y][z].output_signal if x < GRID_SIZE-1 else False
+
+                    if b.type == LOGIC_AND: b.output_signal = in1 and in2
+                    elif b.type == LOGIC_OR: b.output_signal = in1 or in2
+                    elif b.type == LOGIC_NOT: b.output_signal = not in1
+                    elif b.type == LOGIC_NAND: b.output_signal = not (in1 and in2)
+                    elif b.type == LOGIC_NOR: b.output_signal = not (in1 or in2)
+                    elif b.type == LOGIC_XOR: b.output_signal = in1 != in2
+                    elif b.type == LOGIC_SR_LATCH:
+                        # in1 = Set (S), in2 = Reset (R)
+                        if in1: b.latch_state = True
+                        elif in2: b.latch_state = False
+                        b.output_signal = b.latch_state
+                    elif b.type == SENSOR_LASER:
+                        # Laser quét theo trục X
+                        b.output_signal = any(self.grid[sx][y][z].type != AIR for sx in range(x + 1, GRID_SIZE))
+
+    def render_to_image(self):
+        """Vẽ Ma trận 2D tầng hiện tại ra Image Buffer để gửi lên Discord"""
+        cell_sz = 40
+        img_sz = GRID_SIZE * cell_sz
+        img = Image.new("RGB", (img_sz, img_sz), (30, 30, 35))
+        draw = ImageDraw.Draw(img)
+
+        for x in range(GRID_SIZE):
+            for y in range(GRID_SIZE):
+                b = self.grid[x][y][self.current_slice]
+                color = COLOR_MAP.get(b.type, (30, 30, 35))
+                
+                # Nếu cổng logic đang BẬT -> làm sáng màu lên
+                if b.output_signal and b.type >= 10:
+                    color = tuple(min(255, c + 80) for c in color)
+
+                rx, ry = x * cell_sz, y * cell_sz
+                draw.rectangle([rx, ry, rx + cell_sz - 2, ry + cell_sz - 2], fill=color)
+
+        buf = io.BytesIO()
+        img.save(buf, format='PNG')
+        buf.seek(0)
+        return buf
+
+# Quản lý Sandbox theo Guild ID
+guild_sandboxes = {}
+
+# ==========================================
+# 3. INTERACTIVE DISCORD UI (UI CONTROLS)
+# ==========================================
+class SandboxControlView(View):
+    def __init__(self, guild_id):
         super().__init__(timeout=None)
-        self.ctx = ctx
+        self.guild_id = guild_id
 
-    @discord.ui.button(label="⏯️ Play/Pause", style=discord.ButtonStyle.primary)
-    async def btn_play_pause(self, interaction: discord.Interaction, button: Button):
-        vc = interaction.guild.voice_client
-        if not vc:
-            await interaction.response.send_message("❌ Bot không ở trong Voice Channel!", ephemeral=True)
-            return
+    @discord.ui.button(label="➕ Đặt Giáp Thép", style=discord.ButtonStyle.primary, row=0)
+    async def add_armor(self, interaction: discord.Interaction, button: Button):
+        world = guild_sandboxes[self.guild_id]
+        world.set_block(3, 3, world.current_slice, STEEL_ARMOR)
+        world.set_block(4, 3, world.current_slice, COMPOSITE_ARMOR)
+        world.set_block(5, 3, world.current_slice, ENGINE)
+        await self.update_map(interaction, "🛡️ Đã đặt Giáp Thép + Động Cơ mẫu!")
 
-        if vc.is_paused():
-            vc.resume()
-            await interaction.response.send_message("▶️ Đã tiếp tục phát!", ephemeral=True)
-        elif vc.is_playing():
-            vc.pause()
-            await interaction.response.send_message("⏸️ Đã tạm dừng!", ephemeral=True)
-        else:
-            await interaction.response.send_message("❌ Không có bài hát nào đang phát!", ephemeral=True)
+    @discord.ui.button(label="⚡ Đặt Cổng Logic", style=discord.ButtonStyle.success, row=0)
+    async def add_logic(self, interaction: discord.Interaction, button: Button):
+        world = guild_sandboxes[self.guild_id]
+        world.set_block(1, 5, world.current_slice, SENSOR_LASER)
+        world.set_block(2, 5, world.current_slice, LOGIC_XOR)
+        await self.update_map(interaction, "⚡ Đã đặt Laser + Cổng XOR!")
 
-    @discord.ui.button(label="⏭️ Skip", style=discord.ButtonStyle.secondary)
-    async def btn_skip(self, interaction: discord.Interaction, button: Button):
-        vc = interaction.guild.voice_client
-        if not vc or not vc.is_playing():
-            await interaction.response.send_message("❌ Không có bài hát nào để bỏ qua!", ephemeral=True)
-            return
+    @discord.ui.button(label="🚀 Bắn Đạn APFSDS", style=discord.ButtonStyle.danger, row=1)
+    async def fire_shell(self, interaction: discord.Interaction, button: Button):
+        world = guild_sandboxes[self.guild_id]
+        logs = []
+        pen = 350
+        hit = False
 
-        vc.stop()
-        await interaction.response.send_message("⏭️ Đã bỏ qua bài hiện tại!", ephemeral=True)
+        for x in range(GRID_SIZE):
+            b = world.grid[x][3][world.current_slice]
+            if b.type != AIR:
+                hit = True
+                if pen >= b.thickness_mm:
+                    pen -= b.thickness_mm
+                    b.type = AIR # Phá hủy khối
+                    logs.append(f"💥 Xuyên qua giáp tại X={x}! Dư {pen}mm pen.")
+                else:
+                    logs.append(f"🛡️ Đạn bị cản lại tại X={x}!")
+                    break
 
-    @discord.ui.button(label="🔁 Loop", style=discord.ButtonStyle.success)
-    async def btn_loop(self, interaction: discord.Interaction, button: Button):
-        guild_id = interaction.guild.id
-        is_looping[guild_id] = not is_looping.get(guild_id, False)
-        status = "BẬT 🔁" if is_looping[guild_id] else "TẮT 🔄"
-        await interaction.response.send_message(f"🔁 Chế độ lặp lại: **{status}**", ephemeral=True)
+        msg = "\n".join(logs) if hit else "💨 Đạn bay trật mục tiêu!"
+        await self.update_map(interaction, f"**KẾT QUẢ BẮN:**\n{msg}")
 
-    @discord.ui.button(label="⏹️ Stop", style=discord.ButtonStyle.danger)
-    async def btn_stop(self, interaction: discord.Interaction, button: Button):
-        guild_id = interaction.guild.id
-        queue = get_queue(guild_id)
-        queue.clear()
-        is_looping[guild_id] = False
+    @discord.ui.button(label="🔄 Chuyển Tầng Mặt Cắt", style=discord.ButtonStyle.secondary, row=1)
+    async def change_layer(self, interaction: discord.Interaction, button: Button):
+        world = guild_sandboxes[self.guild_id]
+        world.current_slice = (world.current_slice + 1) % GRID_SIZE
+        await self.update_map(interaction, f"🔄 Đã chuyển sang Tầng Z={world.current_slice}")
 
-        vc = interaction.guild.voice_client
-        if vc:
-            vc.stop()
-            await vc.disconnect()
+    async def update_map(self, interaction: discord.Interaction, status_text: str):
+        world = guild_sandboxes[self.guild_id]
+        world.update_logic()
+        buf = world.render_to_image()
+        file = discord.File(fp=buf, filename="sandbox.png")
 
-        await interaction.response.send_message("⏹️ Đã dừng phát, xóa hàng chờ và thoát Voice!", ephemeral=True)
+        embed = discord.Embed(title="🎮 SANDBOX MILITARY & LOGIC SIMULATOR", description=status_text, color=0x2b2d31)
+        embed.set_image(url="attachment://sandbox.png")
+        embed.set_footer(text=f"Tầng mặt cắt hiện tại: Z={world.current_slice} / {GRID_SIZE-1}")
+
+        await interaction.response.edit_message(embed=embed, attachments=[file], view=self)
 
 # ==========================================
-# 5. ENGINE PHÁT MP3
+# 4. BOT COMMANDS & GEMINI AI INTEGRATION
 # ==========================================
-def play_next_track(ctx):
-    guild_id = ctx.guild.id
-    queue = get_queue(guild_id)
-    vc = ctx.voice_client
+@bot.command(name="sandbox", aliases=["game", "sim"])
+async def start_sandbox(ctx):
+    """Khởi tạo Bàn chơi Sandbox tương tác"""
+    guild_sandboxes[ctx.guild.id] = SandboxWorld()
+    world = guild_sandboxes[ctx.guild.id]
 
-    if not vc:
-        return
-
-    if is_looping.get(guild_id, False) and guild_id in current_track:
-        song_info = current_track[guild_id]
-    elif len(queue) > 0:
-        song_info = queue.pop(0)
-        current_track[guild_id] = song_info
-    else:
-        current_track.pop(guild_id, None)
-        return
-
-    file_path = song_info['path']
-    song_title = song_info['title']
-
-    audio_source = discord.FFmpegPCMAudio(file_path, executable="ffmpeg")
-    vc.play(audio_source, after=lambda e: play_next_track(ctx))
-
-    embed = discord.Embed(
-        title="🎶 ĐANG PHÁT NHẠC MP3",
-        description=f"🎵 **Bài hát:** `{song_title}`\n👤 **Yêu cầu bởi:** {song_info['requester'].mention}",
-        color=discord.Color.blue()
-    )
+    buf = world.render_to_image()
+    file = discord.File(fp=buf, filename="sandbox.png")
     
-    view = MusicPlayerView(ctx)
-    asyncio.run_coroutine_threadsafe(ctx.send(embed=embed, view=view), bot.loop)
+    embed = discord.Embed(title="🎮 SANDBOX MILITARY & LOGIC SIMULATOR", description="Bấm các nút bên dưới để đặt giáp, lắp mạch logic hoặc thử nghiệm đạn bắn!", color=0x2b2d31)
+    embed.set_image(url="attachment://sandbox.png")
+
+    view = SandboxControlView(ctx.guild.id)
+    await ctx.send(embed=embed, file=file, view=view)
+
+@bot.command(name="ai", aliases=["ask", "chat"])
+async def ai_chat(ctx, *, prompt: str = None):
+    """Hỏi đáp AI Gemini về Đạn đạo, Giáp xe tăng & Mạch Logic"""
+    if not ai_model:
+        await ctx.send("❌ Chưa cấu hình `GEMINI_API_KEY` trong Environment Variables!")
+        return
+
+    if not prompt:
+        await ctx.send("❌ Nam ơi, cậu hãy nhập câu hỏi! Ví dụ: `!ai So sánh giáp Composite và ERA`")
+        return
+
+    async with ctx.typing():
+        try:
+            sys_prompt = f"Bạn là một chuyên gia quân sự và kỹ sư điện tử. Hãy trả lời ngắn gọn, chính xác câu hỏi sau: {prompt}"
+            response = await asyncio.to_thread(ai_model.generate_content, sys_prompt)
+            
+            embed = discord.Embed(title="🤖 GEMINI MILITARY AI", description=response.text, color=discord.Color.blue())
+            await ctx.send(embed=embed)
+        except Exception as e:
+            await ctx.send(f"❌ Lỗi xử lý AI: {e}")
 
 # ==========================================
-# 6. LỆNH PHÁT NHẠC MP3 (!add, !queue)
-# ==========================================
-@bot.command(name="add")
-async def add_mp3(ctx):
-    if not ctx.author.voice or not ctx.author.voice.channel:
-        await ctx.send("❌ Cậu phải vào một Voice Channel trước khi dùng lệnh `!add`!")
-        return
-
-    if not ctx.message.attachments:
-        await ctx.send("❌ Cậu hãy gửi kèm một file nhạc (.mp3) cùng với lệnh `!add`!")
-        return
-
-    attachment = ctx.message.attachments[0]
-    if not attachment.filename.lower().endswith('.mp3'):
-        await ctx.send("❌ Chỉ hỗ trợ định dạng file nhạc `.mp3`!")
-        return
-
-    user_channel = ctx.author.voice.channel
-    vc = ctx.voice_client
-
-    if vc is None:
-        vc = await user_channel.connect()
-    elif vc.channel != user_channel:
-        await vc.move_to(user_channel)
-
-    if not os.path.exists("temp_audio"):
-        os.makedirs("temp_audio")
-
-    file_path = f"temp_audio/{ctx.guild.id}_{attachment.id}_{attachment.filename}"
-    await attachment.save(file_path)
-
-    song_info = {
-        'title': attachment.filename,
-        'path': file_path,
-        'requester': ctx.author
-    }
-
-    queue = get_queue(ctx.guild.id)
-
-    if not vc.is_playing() and not vc.is_paused():
-        queue.append(song_info)
-        play_next_track(ctx)
-    else:
-        queue.append(song_info)
-        await ctx.send(f"➕ Đã thêm **`{attachment.filename}`** vào hàng chờ (Vị trí #{len(queue)})!")
-
-@bot.command(name="queue", aliases=["q"])
-async def show_queue(ctx):
-    queue = get_queue(ctx.guild.id)
-    guild_id = ctx.guild.id
-
-    embed = discord.Embed(title="📜 HÀNG CHỜ NHẠC MP3", color=discord.Color.purple())
-
-    if guild_id in current_track:
-        loop_status = " (🔁 Loop)" if is_looping.get(guild_id, False) else ""
-        embed.add_field(
-            name="🔊 Đang phát:",
-            value=f"`{current_track[guild_id]['title']}`{loop_status}",
-            inline=False
-        )
-
-    if len(queue) == 0:
-        embed.add_field(name="📋 Hàng chờ tiếp theo:", value="*Hàng chờ đang trống*", inline=False)
-    else:
-        queue_text = ""
-        for idx, song in enumerate(queue, start=1):
-            queue_text += f"**{idx}.** `{song['title']}` - Yêu cầu bởi {song['requester'].mention}\n"
-        embed.add_field(name="📋 Hàng chờ tiếp theo:", value=queue_text, inline=False)
-
-    await ctx.send(embed=embed)
-
-# ==========================================
-# 7. LỆNH TỰ ĐỘNG TẠO PHỤ ĐỀ TIẾNG VIỆT (!sub / !subtitle)
-# ==========================================
-def generate_subtitles_from_audio(mp3_path):
-    """
-    Chuyển đổi MP3 sang WAV và nhận diện giọng nói Tiếng Việt bằng SpeechRecognition.
-    Trả về nội dung văn bản phụ đề và file .srt tạm thời.
-    """
-    if not HAS_STT:
-        return None, "Thư viện `SpeechRecognition` hoặc `pydub` chưa được cài đặt trong requirements.txt!"
-
-    try:
-        # Convert MP3 sang WAV tạm thời để đọc dữ liệu âm thanh
-        wav_path = mp3_path.rsplit(".", 1)[0] + ".wav"
-        sound = AudioSegment.from_file(mp3_path)
-        sound.export(wav_path, format="wav")
-
-        recognizer = sr.Recognizer()
-        with sr.AudioFile(wav_path) as source:
-            audio_data = recognizer.record(source)
-            # Dùng Google Speech API nhận diện Tiếng Việt
-            text = recognizer.recognize_google(audio_data, language="vi-VN")
-
-        # Xóa file WAV tạm
-        if os.path.exists(wav_path):
-            os.remove(wav_path)
-
-        # Tạo file phụ đề chuẩn SRT
-        srt_path = mp3_path.rsplit(".", 1)[0] + ".srt"
-        with open(srt_path, "w", encoding="utf-8") as f:
-            f.write("1\n00:00:00,000 --> 00:01:00,000\n" + text + "\n")
-
-        return text, srt_path
-
-    except sr.UnknownValueError:
-        return None, "Không nhận diện được giọng nói trong file âm thanh này."
-    except sr.RequestError as e:
-        return None, f"Lỗi kết nối tới dịch vụ nhận diện: {e}"
-    except Exception as e:
-        return None, f"Lỗi xử lý file âm thanh: {e}"
-
-@bot.command(name="sub", aliases=["subtitle", "phude"])
-async def create_subtitle(ctx):
-    """Lệnh nhận diện lời nói trong MP3 và xuất ra văn bản + file .srt"""
-    if not ctx.message.attachments:
-        await ctx.send("❌ Cậu hãy gửi kèm một file âm thanh (`.mp3` hoặc `.wav`) cùng với lệnh `!sub`!")
-        return
-
-    attachment = ctx.message.attachments[0]
-    if not attachment.filename.lower().endswith(('.mp3', '.wav', '.m4a')):
-        await ctx.send("❌ Chỉ hỗ trợ các file âm thanh (`.mp3`, `.wav`, `.m4a`)!")
-        return
-
-    status_msg = await ctx.send("⏳ *Đang lắng nghe và trích xuất phụ đề Tiếng Việt... Vui lòng chờ!*")
-
-    if not os.path.exists("temp_audio"):
-        os.makedirs("temp_audio")
-
-    temp_path = f"temp_audio/sub_{attachment.id}_{attachment.filename}"
-    await attachment.save(temp_path)
-
-    loop = asyncio.get_event_loop()
-    text, srt_file = await loop.run_in_executor(None, generate_subtitles_from_audio, temp_path)
-
-    if text:
-        embed = discord.Embed(
-            title="📝 KẾT QUẢ TRÍCH XUẤT PHỤ ĐỀ TIẾNG VIỆT",
-            description=f"```text\n{text}\n```",
-            color=discord.Color.teal()
-        )
-        if srt_file and os.path.exists(srt_file):
-            file = discord.File(srt_file, filename="phu_de_tieng_viet.srt")
-            await status_msg.edit(content="✅ **Đã tạo xong phụ đề!**", embed=embed)
-            await ctx.send(file=file)
-            os.remove(srt_file)
-        else:
-            await status_msg.edit(content="✅ **Đã nhận diện văn bản:**", embed=embed)
-    else:
-        await status_msg.edit(content=f"❌ **Không thể tạo phụ đề:** {srt_file}")
-
-    if os.path.exists(temp_path):
-        os.remove(temp_path)
-
-# ==========================================
-# 8. LỆNH TTS ĐỌC GIỌNG NÓI + NHẠC NỀN (!tts)
-# ==========================================
-@bot.command(name="tts")
-async def text_to_speech(ctx, lang_or_text: str = None, *, text_rest: str = None):
-    if not HAS_GTTS:
-        await ctx.send("❌ Thư viện `gTTS` chưa được cài đặt trong `requirements.txt`!")
-        return
-
-    if not ctx.author.voice or not ctx.author.voice.channel:
-        await ctx.send("❌ Cậu phải tham gia vào Voice Channel trước!")
-        return
-
-    if not lang_or_text:
-        await ctx.send("❌ Cậu phải nhập nội dung cần đọc! Ví dụ: `!tts Xin chào` hoặc `!tts en Hello` (Gửi kèm MP3 nếu muốn có nhạc nền).")
-        return
-
-    if text_rest:
-        lang_code = lang_or_text
-        text_content = text_rest
-    else:
-        lang_code = "vi"
-        text_content = lang_or_text
-
-    user_channel = ctx.author.voice.channel
-    vc = ctx.voice_client
-
-    if vc is None:
-        vc = await user_channel.connect()
-    elif vc.channel != user_channel:
-        await vc.move_to(user_channel)
-
-    if vc.is_playing():
-        vc.stop()
-
-    if not os.path.exists("temp_audio"):
-        os.makedirs("temp_audio")
-
-    tts_path = f"temp_audio/tts_{ctx.author.id}.mp3"
-
-    try:
-        tts = gTTS(text=text_content, lang=lang_code, slow=False)
-        tts.save(tts_path)
-    except Exception as e:
-        await ctx.send(f"❌ Lỗi tạo TTS (Kiểm tra lại mã ngôn ngữ `{lang_code}`): {e}")
-        return
-
-    bg_music_path = None
-    if ctx.message.attachments:
-        attachment = ctx.message.attachments[0]
-        if attachment.filename.lower().endswith('.mp3'):
-            bg_music_path = f"temp_audio/bg_{attachment.id}_{attachment.filename}"
-            await attachment.save(bg_music_path)
-
-    if bg_music_path:
-        ffmpeg_options = {
-            'options': f'-i "{bg_music_path}" -filter_complex "[0:a]volume=1.6[voice];[1:a]volume=0.25[bg];[voice][bg]amix=inputs=2:duration=first[out]" -map "[out]"'
-        }
-        audio_source = discord.FFmpegPCMAudio(tts_path, executable="ffmpeg", **ffmpeg_options)
-        await ctx.send(f"🗣️ **Đang đọc TTS (`{lang_code}`) kèm Nhạc nền:** `{text_content}`")
-    else:
-        audio_source = discord.FFmpegPCMAudio(tts_path, executable="ffmpeg")
-        await ctx.send(f"🗣️ **Đang đọc TTS (`{lang_code}`):** `{text_content}`")
-
-    def after_playing(error):
-        if os.path.exists(tts_path):
-            os.remove(tts_path)
-        if bg_music_path and os.path.exists(bg_music_path):
-            os.remove(bg_music_path)
-
-    vc.play(audio_source, after=after_playing)
-
-# ==========================================
-# 9. HÀM TÁCH VIDEO THÀNH GIF (!process - FIX 413)
-# ==========================================
-def process_video_to_gifs(video_path, chunk_duration=10, target_fps=8):
-    cap = cv2.VideoCapture(video_path)
-    if not cap.isOpened():
-        return None, "Không thể đọc file video!"
-
-    fps = cap.get(cv2.CAP_PROP_FPS)
-    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    duration = total_frames / fps if fps > 0 else 0
-
-    if duration > 61:
-        cap.release()
-        return None, "Video vượt quá giới hạn 1 phút!"
-
-    frames_per_chunk = int(fps * chunk_duration)
-    frame_interval = max(1, int(fps / target_fps))
-    
-    gif_buffers = []
-    current_frame = 0
-    chunk_index = 1
-
-    while cap.isOpened():
-        chunk_frames = []
-        chunk_end_frame = current_frame + frames_per_chunk
-
-        while current_frame < chunk_end_frame and cap.isOpened():
-            ret, frame = cap.read()
-            if not ret:
-                break
-
-            if current_frame % frame_interval == 0:
-                frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                pil_img = Image.fromarray(frame_rgb)
-                pil_img = pil_img.resize((360, 202), Image.Resampling.BILINEAR)
-                pil_img = pil_img.convert("P", palette=Image.Palette.ADAPTIVE, colors=128)
-                chunk_frames.append(pil_img)
-
-            current_frame += 1
-
-        if chunk_frames:
-            buf = io.BytesIO()
-            chunk_frames[0].save(
-                buf,
-                format="GIF",
-                save_all=True,
-                append_images=chunk_frames[1:],
-                duration=int(1000 / target_fps),
-                loop=0,
-                optimize=True
-            )
-            buf.seek(0)
-            gif_buffers.append((f"part_{chunk_index}.gif", buf))
-            chunk_index += 1
-        else:
-            break
-
-    cap.release()
-    return gif_buffers, None
-
-@bot.command(name="process", aliases=["convert", "gif"])
-async def process_media(ctx):
-    if not ctx.author.voice or not ctx.author.voice.channel:
-        await ctx.send("❌ Cậu phải tham gia vào Voice Channel trước!")
-        return
-
-    if not ctx.message.attachments:
-        await ctx.send("❌ Cậu hãy gửi kèm một file video (.mp4, .mov, .mkv)!")
-        return
-
-    attachment = ctx.message.attachments[0]
-    if not attachment.filename.lower().endswith(('.mp4', '.mov', '.mkv')):
-        await ctx.send("❌ Chỉ hỗ trợ định dạng video (.mp4, .mov, .mkv)!")
-        return
-
-    status_msg = await ctx.send("⏳ *Đang tải và xử lý video... Vui lòng chờ!*")
-    temp_video_path = f"temp_{ctx.author.id}_{int(asyncio.get_event_loop().time())}_{attachment.filename}"
-    await attachment.save(temp_video_path)
-
-    try:
-        loop = asyncio.get_event_loop()
-        gif_list, err = await loop.run_in_executor(None, process_video_to_gifs, temp_video_path)
-
-        if err:
-            await status_msg.edit(content=f"❌ Lỗi: {err}")
-            return
-
-        user_channel = ctx.author.voice.channel
-        vc = ctx.voice_client
-
-        if vc is None:
-            vc = await user_channel.connect()
-        elif vc.channel != user_channel:
-            await vc.move_to(user_channel)
-
-        if vc.is_playing():
-            vc.stop()
-
-        ffmpeg_options = {'options': '-af "adelay=3000|3000"'}
-        audio_source = discord.FFmpegPCMAudio(temp_video_path, executable="ffmpeg", **ffmpeg_options)
-        vc.play(audio_source)
-
-        total_parts = len(gif_list)
-        current_msg = status_msg
-
-        for index, (gif_name, gif_buf) in enumerate(gif_list, start=1):
-            file = discord.File(fp=gif_buf, filename=gif_name)
-            embed = discord.Embed(
-                title="🎬 TRÌNH CHIẾU MEDIA",
-                description=f"**Đang phát phân đoạn:** `[{index}/{total_parts}]` *(Âm thanh delay 3s)*",
-                color=discord.Color.gold()
-            )
-            embed.set_image(url=f"attachment://{gif_name}")
-
-            if current_msg and current_msg != status_msg:
-                try:
-                    await current_msg.delete()
-                except Exception:
-                    pass
-
-            current_msg = await ctx.send(embed=embed, file=file)
-            gif_buf.close()
-
-            if index < total_parts:
-                await asyncio.sleep(10)
-
-        final_embed = discord.Embed(
-            title="✅ TRÌNH CHIẾU HOÀN TẤT",
-            description=f"Đã phát xong toàn bộ **{total_parts}** phân đoạn GIF!",
-            color=discord.Color.green()
-        )
-        await current_msg.edit(embed=final_embed)
-
-    except Exception as e:
-        await ctx.send(f"❌ Lỗi xử lý: {e}")
-    finally:
-        if os.path.exists(temp_video_path):
-            os.remove(temp_video_path)
-
-# ==========================================
-# 10. TỰ ĐỘNG NGẮT VOICE KHI PHÒNG TRỐNG
-# ==========================================
-@bot.event
-async def on_voice_state_update(member, before, after):
-    for vc in bot.voice_clients:
-        if len(vc.channel.members) == 1:
-            await vc.disconnect()
-
-# ==========================================
-# 11. KHỞI CHẠY BOT
+# 5. KHỞI CHẠY BOT
 # ==========================================
 if __name__ == "__main__":
-    t_flask = threading.Thread(target=run_flask)
-    t_flask.daemon = True
-    t_flask.start()
+    # Chạy Flask Server trong Thread riêng
+    t = threading.Thread(target=run_flask)
+    t.daemon = True
+    t.start()
 
     token = os.environ.get("DISCORD_TOKEN")
     if token:
         bot.run(token)
     else:
-        print("Lỗi: Chưa thiết lập DISCORD_TOKEN trong Environment Variables!")
+        print("Lỗi: Chưa thiết lập DISCORD_TOKEN!")
