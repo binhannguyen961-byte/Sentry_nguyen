@@ -1,11 +1,11 @@
 # Sử dụng Python 3.10 mỏng nhẹ
 FROM python:3.10-slim
 
-# Cài đặt các công cụ hệ thống bắt buộc: FFmpeg, Opus (Cho Voice), OpenCV dependencies
+# Cài đặt các thư viện hệ thống (Đã thay libgl1-mesa-glx thành libgl1)
 RUN apt-get update && apt-get install -y \
     ffmpeg \
     libopus0 \
-    libgl1-mesa-glx \
+    libgl1 \
     libglib2.0-0 \
     && rm -rf /var/lib/apt/lists/*
 
