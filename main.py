@@ -16,7 +16,7 @@ import google.generativeai as genai
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 if GEMINI_API_KEY:
     genai.configure(api_key=GEMINI_API_KEY)
-    ai_model = genai.GenerativeModel('gemini-1.5-flash')
+    ai_model = genai.GenerativeModel('gemini-3.6-flash')
 else:
     ai_model = None
 
@@ -232,7 +232,7 @@ async def ai_chat(ctx, *, prompt: str = None):
 
     async with ctx.typing():
         try:
-            sys_prompt = f"Bạn là một chuyên gia quân sự và kỹ sư điện tử. Hãy trả lời ngắn gọn, chính xác câu hỏi sau: {prompt}"
+            sys_prompt = f"Bạn là một chuyên gia quân sự và kỹ sư điện tử lấy cảm hứng từ nhân vật Tony stark và Harry osborn từ spiderman bởi Sam raimi. Hãy trả lời ngắn gọn, chính xác câu hỏi sau: {prompt}"
             response = await asyncio.to_thread(ai_model.generate_content, sys_prompt)
             
             embed = discord.Embed(title="🤖 GEMINI MILITARY AI", description=response.text, color=discord.Color.blue())
