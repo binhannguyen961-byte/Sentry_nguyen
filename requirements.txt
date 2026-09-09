@@ -1,4 +1,8 @@
 discord.py
 Flask
 Pillow
+opencv-python-headless
+gTTS
+SpeechRecognition
+pydub
 google-generativeai
