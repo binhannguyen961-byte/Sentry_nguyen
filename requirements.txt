@@ -1,8 +1,4 @@
-discord.py[voice]
-opencv-python-headless
-Pillow
+discord.py
 Flask
-gTTS
-SpeechRecognition
-pydub
-PyNaCl
+Pillow
+google-generativeai
