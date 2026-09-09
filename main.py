@@ -15,7 +15,7 @@ import google.generativeai as genai
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 if GEMINI_API_KEY:
     genai.configure(api_key=GEMINI_API_KEY)
-    ai_model = genai.GenerativeModel('gemini-3.6-flash')
+    ai_model = genai.GenerativeModel('gemini-1.5-flash')
 else:
     ai_model = None
 
@@ -25,15 +25,15 @@ bot = commands.Bot(command_prefix=["!", "/"], intents=intents, help_command=None
 
 app = Flask(__name__)
 @app.route('/')
-def home(): return "Plane Crazy & Military Logic Bot Online!"
+def home(): return "Industrialist & Plane Crazy Engine Online!"
 def run_flask(): app.run(host='0.0.0.0', port=int(os.environ.get("PORT", 10000)))
 
 # ==========================================
-# 2. HỆ THỐNG VẬT LÝ & LOGIC ENGINE
+# 2. HỆ THỐNG KHỐI (BLOCKS & INDUSTRIALIST LOGIC)
 # ==========================================
 GRID_SIZE = 10
 
-# Nhóm Giáp & Cơ khí
+# Khối vật chất & Giáp
 AIR = 0
 STEEL_ARMOR = 1
 COMPOSITE_ARMOR = 2
@@ -41,13 +41,20 @@ ERA_ARMOR = 3
 ENGINE = 4
 AMMO_RACK = 5
 
-# Nhóm Phụ kiện Plane Crazy
-WING = 6          # Cánh máy bay
-CANNON = 7        # Pháo
-CAMERA = 8        # Camera
-GYRO = 9          # Con quay hồi chuyển
+# Khối PvP & Cơ khí mới
+TNT = 30                # Khối thuốc nổ phát nổ khi nhận điện
+PNEUMATIC = 31          # Động cơ khí / Piston đẩy
+PROPELLER = 32          # Cánh quạt tạo lực đẩy gió
+ROCKET_ENGINE = 33      # Động cơ tên lửa phản lực mạnh
 
-# Nhóm Logic Gates
+# Khối phụ kiện cũ
+WING = 6
+CANNON = 7
+CAMERA = 8
+GYRO = 9
+COORD_READER = 35       # Khối đọc tọa độ X, Y của chính nó hoặc truyền vị trí
+
+# Nhóm Logic Gates (Mở rộng chuẩn Industrialist)
 LOGIC_AND = 10
 LOGIC_OR = 11
 LOGIC_NOT = 12
@@ -55,12 +62,18 @@ LOGIC_NAND = 13
 LOGIC_NOR = 14
 LOGIC_XOR = 15
 LOGIC_SR_LATCH = 16
-LOGIC_CLOCK = 17  # Xung nhịp tự động
-LOGIC_DELAY = 18  # Trễ 1 nhịp
-LOGIC_TOGGLE = 19 # Nút bấm chuyển đổi (T-Flip Flop)
-SENSOR_LASER = 20
+LOGIC_CLOCK = 17
+LOGIC_DELAY = 18
+LOGIC_TOGGLE = 19
+LOGIC_BUFFER = 20       # Truyền tín hiệu có trễ định hình
+LOGIC_PULSE = 21        # Tạo xung đơn (Edge detector)
+LOGIC_COUNTER = 22      # Đếm xung tín hiệu đầu vào
+LOGIC_GREATER = 23      # So sánh A > B
+LOGIC_LESS = 24         # So sánh A < B
+LOGIC_MUX = 25          # Bộ chọn kênh (Multiplexer)
+SENSOR_LASER = 26
 
-# Thông số khối (Vật lý: Trọng lượng, Render: Màu & Nhãn)
+# Thông số khối (Mass, Color, Label)
 BLOCK_INFO = {
     AIR: {"color": (30, 30, 35), "label": "", "mass": 0},
     STEEL_ARMOR: {"color": (120, 120, 130), "label": "ST", "mass": 500},
@@ -68,10 +81,15 @@ BLOCK_INFO = {
     ERA_ARMOR: {"color": (200, 100, 30), "label": "ER", "mass": 100},
     ENGINE: {"color": (220, 180, 50), "label": "ENG", "mass": 800},
     AMMO_RACK: {"color": (220, 40, 40), "label": "AMG", "mass": 300},
+    TNT: {"color": (255, 69, 0), "label": "TNT", "mass": 150},
+    PNEUMATIC: {"color": (100, 200, 200), "label": "PNE", "mass": 250},
+    PROPELLER: {"color": (180, 200, 220), "label": "PRP", "mass": 100},
+    ROCKET_ENGINE: {"color": (255, 140, 0), "label": "ROC", "mass": 400},
     WING: {"color": (200, 220, 255), "label": "WNG", "mass": 50},
     CANNON: {"color": (80, 80, 80), "label": "GUN", "mass": 600},
     CAMERA: {"color": (50, 200, 100), "label": "CAM", "mass": 20},
     GYRO: {"color": (150, 100, 250), "label": "GYR", "mass": 150},
+    COORD_READER: {"color": (220, 220, 100), "label": "POS", "mass": 40},
     LOGIC_AND: {"color": (0, 180, 200), "label": "&", "mass": 10},
     LOGIC_OR: {"color": (150, 0, 200), "label": "≥1", "mass": 10},
     LOGIC_NOT: {"color": (200, 200, 0), "label": "!", "mass": 10},
@@ -82,6 +100,12 @@ BLOCK_INFO = {
     LOGIC_CLOCK: {"color": (255, 150, 0), "label": "CLK", "mass": 10},
     LOGIC_DELAY: {"color": (100, 150, 100), "label": "DLY", "mass": 10},
     LOGIC_TOGGLE: {"color": (200, 50, 200), "label": "TGL", "mass": 10},
+    LOGIC_BUFFER: {"color": (50, 150, 200), "label": "BUF", "mass": 10},
+    LOGIC_PULSE: {"color": (250, 100, 150), "label": "PLS", "mass": 10},
+    LOGIC_COUNTER: {"color": (150, 150, 50), "label": "CNT", "mass": 10},
+    LOGIC_GREATER: {"color": (100, 200, 50), "label": ">", "mass": 10},
+    LOGIC_LESS: {"color": (200, 100, 50), "label": "<", "mass": 10},
+    LOGIC_MUX: {"color": (100, 50, 200), "label": "MUX", "mass": 10},
     SENSOR_LASER: {"color": (250, 50, 50), "label": "LAS", "mass": 20}
 }
 
@@ -89,11 +113,10 @@ class Block:
     def __init__(self, b_type=AIR):
         self.type = b_type
         self.output_signal = False
-        self.prev_signal = False # Dùng cho Delay và Edge Detection (Toggle)
+        self.prev_signal = False
         self.latch_state = False
-        self.health = 100
-        # Physics properties
-        self.mass = BLOCK_INFO[b_type]["mass"]
+        self.counter_value = 0
+        self.mass = BLOCK_INFO.get(b_type, BLOCK_INFO[AIR])["mass"]
 
 class SandboxWorld:
     def __init__(self):
@@ -110,13 +133,10 @@ class SandboxWorld:
         self.__init__()
 
     def analyze_physics(self):
-        """Tính toán Vật lý (Giống Plane Crazy)"""
         total_mass = 0
         total_lift = 0
         total_thrust = 0
         gyro_power = 0
-        
-        # Tọa độ trọng tâm (Center of Mass)
         cm_x, cm_y = 0, 0 
 
         for x in range(GRID_SIZE):
@@ -129,6 +149,8 @@ class SandboxWorld:
                         cm_y += y * b.mass
                         
                         if b.type == ENGINE: total_thrust += 5000
+                        elif b.type == PROPELLER: total_thrust += 2000
+                        elif b.type == ROCKET_ENGINE: total_thrust += 12000
                         elif b.type == WING: total_lift += 3000
                         elif b.type == GYRO: gyro_power += 1000
 
@@ -146,17 +168,16 @@ class SandboxWorld:
         }
 
     def update_logic_step(self):
-        """Tiến lên 1 Tick và cập nhật các mạch logic, vũ khí"""
         self.tick_count += 1
         self.logs.clear()
 
-        # Cập nhật prev_signal trước
+        # Lưu trạng thái cũ
         for x in range(GRID_SIZE):
             for y in range(GRID_SIZE):
                 for z in range(GRID_SIZE):
                     self.grid[x][y][z].prev_signal = self.grid[x][y][z].output_signal
 
-        # Tính toán tín hiệu mới
+        # Tính toán Industrialist Logic Gates & PvP
         for x in range(GRID_SIZE):
             for y in range(GRID_SIZE):
                 for z in range(GRID_SIZE):
@@ -168,26 +189,40 @@ class SandboxWorld:
                     elif b.type == LOGIC_OR: b.output_signal = in1 or in2
                     elif b.type == LOGIC_NOT: b.output_signal = not in1
                     elif b.type == LOGIC_XOR: b.output_signal = in1 != in2
-                    elif b.type == LOGIC_CLOCK:
-                        # Nhấp nháy sau mỗi 2 tick
-                        b.output_signal = (self.tick_count % 2 == 0)
-                    elif b.type == LOGIC_DELAY:
-                        b.output_signal = in1
+                    elif b.type == LOGIC_CLOCK: b.output_signal = (self.tick_count % 2 == 0)
+                    elif b.type == LOGIC_DELAY: b.output_signal = in1
+                    elif b.type == LOGIC_BUFFER: b.output_signal = in1
+                    elif b.type == LOGIC_PULSE:
+                        b.output_signal = in1 and not self.grid[x-1][y][z].prev_signal if x > 0 else False
+                    elif b.type == LOGIC_COUNTER:
+                        if in1 and not self.grid[x-1][y][z].prev_signal if x > 0 else False:
+                            b.counter_value = (b.counter_value + 1) % 10
+                        b.output_signal = (b.counter_value > 0)
+                    elif b.type == LOGIC_GREATER:
+                        b.output_signal = int(in1) > int(in2)
+                    elif b.type == LOGIC_LESS:
+                        b.output_signal = int(in1) < int(in2)
+                    elif b.type == LOGIC_MUX:
+                        # Nếu có tín hiệu điều khiển, chọn luồng
+                        b.output_signal = in2 if in1 else False
                     elif b.type == LOGIC_TOGGLE:
-                        # Chuyển trạng thái khi in1 từ False -> True (Rising edge)
                         curr_in1 = self.grid[x-1][y][z].output_signal if x > 0 else False
                         prev_in1 = self.grid[x-1][y][z].prev_signal if x > 0 else False
                         if curr_in1 and not prev_in1:
                             b.latch_state = not b.latch_state
                         b.output_signal = b.latch_state
-                    elif b.type == SENSOR_LASER:
-                        b.output_signal = any(self.grid[sx][y][z].type != AIR for sx in range(x + 1, GRID_SIZE))
-                    
-                    # Pháo nhận tín hiệu -> Khai hỏa!
+                    elif b.type == COORD_READER:
+                        # Lấy hai khối đầu tiên (hoặc hiển thị tọa độ X, Y của khối này)
+                        b.output_signal = True
+                        self.logs.append(f"📍 Tọa độ khối POS tại X={x}, Y={y}, Z={z}")
+                    elif b.type == TNT:
+                        if in1:
+                            self.logs.append(f"💥 TNT phát nổ tại ({x},{y},{z})!")
+                            self.grid[x][y][z] = Block(AIR) # Hủy khối TNT
                     elif b.type == CANNON:
                         if in1:
-                            self.logs.append(f"🔥 Pháo tại ({x},{y}) đã KHAI HỎA do nhận tín hiệu Logic!")
-                            b.output_signal = True # Sáng lên khi bắn
+                            self.logs.append(f"🔥 Pháo tại ({x},{y}) khai hỏa!")
+                            b.output_signal = True
                         else:
                             b.output_signal = False
 
@@ -208,7 +243,7 @@ class SandboxWorld:
                 color = info["color"]
                 label = info["label"]
 
-                if b.output_signal and (b.type >= 10 or b.type == CANNON):
+                if b.output_signal and (b.type >= 10 or b.type in [CANNON, COORD_READER]):
                     color = tuple(min(255, c + 90) for c in color)
 
                 rx, ry = x * cell_sz, y * cell_sz
@@ -216,7 +251,7 @@ class SandboxWorld:
 
                 if label:
                     text_color = (255, 255, 255) if b.type != STEEL_ARMOR else (10, 10, 10)
-                    draw.text((rx + 10, ry + 12), label, fill=text_color, font=font)
+                    draw.text((rx + 8, ry + 12), label, fill=text_color, font=font)
 
         buf = io.BytesIO()
         img.save(buf, format='PNG')
@@ -242,7 +277,7 @@ async def show_map(ctx):
     buf = world.render_to_image()
     file = discord.File(fp=buf, filename="sandbox.png")
     
-    embed = discord.Embed(title="🎮 PLANE CRAZY & LOGIC ENGINE", color=0x2b2d31)
+    embed = discord.Embed(title="🎮 INDUSTRIALIST & PVP ENGINE", color=0x2b2d31)
     embed.set_image(url="attachment://sandbox.png")
     embed.set_footer(text=f"Tầng Z={world.current_slice} | Tick: {world.tick_count}")
     await ctx.send(embed=embed, file=file)
@@ -260,8 +295,13 @@ async def set_block_cmd(ctx, block_name: str = None, x: int = None, y: int = Non
         "steel": STEEL_ARMOR, "composite": COMPOSITE_ARMOR, "era": ERA_ARMOR,
         "engine": ENGINE, "ammo": AMMO_RACK, "wing": WING, "cannon": CANNON,
         "camera": CAMERA, "gyro": GYRO, "air": AIR,
+        "tnt": TNT, "pneumatic": PNEUMATIC, "piston": PNEUMATIC,
+        "propeller": propeller := PROPELLER, "rocket": ROCKET_ENGINE,
+        "pos": COORD_READER, "coord": COORD_READER,
         "and": LOGIC_AND, "or": LOGIC_OR, "not": LOGIC_NOT, "xor": LOGIC_XOR,
-        "clock": LOGIC_CLOCK, "delay": LOGIC_DELAY, "toggle": LOGIC_TOGGLE, "laser": SENSOR_LASER
+        "clock": LOGIC_CLOCK, "delay": LOGIC_DELAY, "toggle": LOGIC_TOGGLE,
+        "buffer": LOGIC_BUFFER, "pulse": LOGIC_PULSE, "counter": LOGIC_COUNTER,
+        "greater": LOGIC_GREATER, "less": LOGIC_LESS, "mux": LOGIC_MUX, "laser": SENSOR_LASER
     }
 
     b_type = NAME_MAP.get(block_name.lower())
@@ -271,57 +311,40 @@ async def set_block_cmd(ctx, block_name: str = None, x: int = None, y: int = Non
 
 @bot.command(name="step", aliases=["tick"])
 async def step_logic(ctx, steps: int = 1):
-    """Tiến mô phỏng logic lên N nhịp (Để Clock chớp tắt hoặc Pháo bắn)"""
     await auto_delete_cmd(ctx)
     world = get_world(ctx.guild.id)
-    for _ in range(min(steps, 10)):  # Giới hạn max 10 step 1 lần
+    for _ in range(min(steps, 10)):
         world.update_logic_step()
     
     buf = world.render_to_image()
     file = discord.File(fp=buf, filename="sandbox.png")
     
-    desc = "\n".join(world.logs) if world.logs else "Mạch logic đã được cập nhật trạng thái."
-    embed = discord.Embed(title=f"⏱️ CHẠY MÔ PHỎNG ({steps} Ticks)", description=desc, color=0x00ff00)
+    desc = "\n".join(world.logs) if world.logs else "Mạch logic industrialist đã xử lý xong nhịp."
+    embed = discord.Embed(title=f"⏱️ TICK MẠCH & PVP ({steps} steps)", description=desc, color=0x00ff00)
     embed.set_image(url="attachment://sandbox.png")
     await ctx.send(embed=embed, file=file)
 
 @bot.command(name="physics", aliases=["testflight"])
 async def eval_physics(ctx):
-    """Phân tích Bản vẽ Vật lý chuẩn Plane Crazy"""
     await auto_delete_cmd(ctx)
     world = get_world(ctx.guild.id)
     stats = world.analyze_physics()
     
-    mass = stats["mass"]
-    thrust = stats["thrust"]
-    lift = stats["lift"]
-    
-    # Đánh giá bay
-    can_move = thrust > (mass * 0.5)
-    can_fly = (lift + thrust * 0.5) > mass * 9.8  # Mô phỏng gia tốc trọng trường
-
-    status = "🔴 LÀM BẰNG CHÌ À? Quá nặng, không nhúc nhích được!"
-    if can_fly: status = "✈️ CẤT CÁNH THÀNH CÔNG! Đủ lực nâng và lực đẩy."
-    elif can_move: status = "🏎️ CHỈ CHẠY TRÊN ĐẤT! Lực nâng cánh quá yếu so với trọng lượng."
-
-    embed = discord.Embed(title="📐 BÁO CÁO VẬT LÝ BẢN VẼ (PLANE CRAZY)", color=0x3498db)
-    embed.add_field(name="⚖️ Trọng lượng (Mass)", value=f"{mass} kg", inline=True)
-    embed.add_field(name="🚀 Lực đẩy (Thrust)", value=f"{thrust} N", inline=True)
-    embed.add_field(name="🦅 Lực nâng (Lift)", value=f"{lift} N", inline=True)
+    embed = discord.Embed(title="📐 BÁO CÁO VẬT LÝ & ĐỘNG CƠ", color=0x3498db)
+    embed.add_field(name="⚖️ Khối lượng", value=f"{stats['mass']} kg", inline=True)
+    embed.add_field(name="🚀 Lực đẩy tổng (Engine+Prop+Rocket)", value=f"{stats['thrust']} N", inline=True)
+    embed.add_field(name="🦅 Lực nâng cánh", value=f"{stats['lift']} N", inline=True)
     embed.add_field(name="🎯 Trọng tâm (CoM)", value=f"X: {stats['cm_x']}, Y: {stats['cm_y']}", inline=True)
-    embed.add_field(name="🌀 Độ ổn định (Gyro)", value=f"{stats['gyro']} Power", inline=True)
-    embed.add_field(name="📊 KẾT LUẬN", value=f"**{status}**", inline=False)
-    
     await ctx.send(embed=embed)
 
 @bot.command(name="help", aliases=["trogiup"])
 async def help_command(ctx):
     await auto_delete_cmd(ctx)
-    embed = discord.Embed(title="📖 BẢNG LỆNH PLANE CRAZY & LOGIC", color=0x00ff7f)
+    embed = discord.Embed(title="📖 BẢNG LỆNH INDUSTRIALIST & PVP", color=0x00ff7f)
     embed.add_field(name="🛠️ XÂY DỰNG", value="`!map` `!layer <0-9>` `!set <khối> <x> <y>` `!clear`", inline=False)
-    embed.add_field(name="🚀 VẬT LÝ & LOGIC", value="`!step [số]` : Chạy xung nhịp (kích hoạt Clock, Pháo).\n`!physics` : Tính xem xe/máy bay có chạy/bay nổi không.", inline=False)
-    embed.add_field(name="🧩 KHỐI MỚI", value="`wing` (Cánh), `cannon` (Pháo), `camera`, `gyro` (Gyroscope)\n`clock` (Tự nhấp nháy), `delay` (Trễ), `toggle` (Công tắc T)", inline=False)
-    embed.add_field(name="🤖 AI", value="`!ai <câu hỏi>` : Hỏi AI về kỹ thuật.", inline=False)
+    embed.add_field(name="💣 KHỐI PVP & CƠ KHÍ", value="`tnt`, `pneumatic` (Piston), `propeller` (Cánh quạt), `rocket` (Động cơ tên lửa), `pos` (Đọc tọa độ X,Y)", inline=False)
+    embed.add_field(name="⚡ INDUSTRIALIST LOGIC", value="`buffer`, `pulse`, `counter`, `greater` (>), `less` (<), `mux`, `clock`, `delay`, `toggle`, `and`, `or`, `not`, `xor`", inline=False)
+    embed.add_field(name="🚀 ĐIỀU KHIỂN", value="`!step [số]` : Chạy xung nhịp mạch / Kích hoạt TNT & Pháo\n`!physics` : Kiểm tra thông số lực đẩy động cơ", inline=False)
     await ctx.send(embed=embed)
 
 @bot.command(name="ai")
@@ -329,9 +352,9 @@ async def ai_chat(ctx, *, prompt: str = None):
     await auto_delete_cmd(ctx)
     if not ai_model or not prompt: return
     async with ctx.typing():
-        sys_prompt = f"Bạn là kỹ sư vũ khí thông minh, pha trộn giữa Tony Stark và Harry Osborn. Hãy trả lời cực chuẩn xác và có phần kiêu hãnh: {prompt}"
+        sys_prompt = f"Bạn là chuyên gia kỹ sư quân sự và thiết kế máy móc logic. Hãy trả lời cực kỳ chuẩn xác và sắc sảo: {prompt}"
         res = await asyncio.to_thread(ai_model.generate_content, sys_prompt)
-        embed = discord.Embed(title="🤖 STARK & OSBORN AI", description=res.text, color=discord.Color.blue())
+        embed = discord.Embed(title="🤖 STARK AI", description=res.text, color=discord.Color.blue())
         await ctx.send(embed=embed)
 
 if __name__ == "__main__":
