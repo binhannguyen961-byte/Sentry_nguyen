@@ -16,18 +16,12 @@ if os.environ.get("GEMINI_API_KEY_2"):
 current_key_idx = 0
 
 def get_next_ai_model():
-    """Hàm lấy model AI theo cơ chế xoay vòng giữa các API Key"""
     global current_key_idx
     if not api_keys:
         return None
-    
-    # Lấy key hiện tại cấu hình
     active_key = api_keys[current_key_idx]
     genai.configure(api_key=active_key)
-    
-    # Chuyển sang key tiếp theo cho lần gọi sau (xoay vòng tròn)
     current_key_idx = (current_key_idx + 1) % len(api_keys)
-    
     return genai.GenerativeModel(
         'gemini-1.5-flash',
         generation_config={"response_mime_type": "application/json"}
@@ -54,7 +48,7 @@ def get_asset(filename):
 # Flask Server giữ Bot sống 24/7 trên hosting
 app = Flask(__name__)
 @app.route('/')
-def home(): return "DDLC Open World Engine (Dual API Keys) Online!"
+def home(): return "DDLC Open World Engine Online!"
 def run_flask(): app.run(host='0.0.0.0', port=int(os.environ.get("PORT", 10000)))
 
 # --- CƠ SỞ DỮ LIỆU MINIGAME ---
@@ -178,6 +172,42 @@ def render_screen(state):
     buf.seek(0)
     return buf
 
+# --- XỬ LÝ CỐT TRUYỆN MỞ BẰNG AI ---
+async def process_ai_story(state, user_input):
+    prompt = f"""
+    Bạn là Game Engine quản lý thế giới mở DDLC. 
+    - Tên người chơi: {state.user_name}
+    - Nhân vật hiện tại: {state.speaker}
+    - Ảnh nền hiện tại: {state.bg_image}
+    - Hành động của {state.user_name}: {user_input}
+    
+    Hãy viết một câu thoại tiếp nối bằng tiếng Việt cho nhân vật nói với {state.user_name}, đồng thời chọn một file ảnh khớp chính xác 100% từ danh sách sau dựa theo diễn biến:
+    - 'club_monika.JPEG' | 'club_sayori.jpg' | 'club_yuri.jpg' | 'club_natsuki.JPEG'
+    - 'cafe_monika.JPEG' | 'cafe_sayori.JPEG' | 'cafe_yuri.JPEG' | 'cafe_natsuki.JPEG'
+    - 'park_monika.JPEG' | 'park_sayori.JPEG' | 'park_yuri.JPEG' | 'park_natsuki.JPEG'
+    - 'street_monika.JPEG' | 'street_sayori.JPEG' | 'street_yuri.JPEG' | 'street_natsuki.JPEG'
+    
+    Trả về ĐÚNG cấu trúc JSON gồm đúng 3 trường (không thêm bớt):
+    {{"speaker": "Tên nhân vật", "text": "Câu thoại", "bg_image": "tên_file_ảnh"}}
+    """
+    
+    for attempt in range(2):
+        model = get_next_ai_model()
+        if not model:
+            break
+        try:
+            res = model.generate_content(prompt)
+            clean_text = res.text.strip().replace("```json", "").replace("```", "").strip()
+            data = json.loads(clean_text)
+            
+            state.speaker = data.get("speaker", state.speaker)
+            state.text = data.get("text", state.text)
+            state.bg_image = data.get("bg_image", state.bg_image)
+            return True
+        except Exception as e:
+            print(f"Lỗi AI JSON (Lần {attempt+1}): {e}")
+    return False
+
 # --- DISCORD UI BUTTONS ---
 class GameControls(View):
     def __init__(self, ctx, state):
@@ -185,38 +215,36 @@ class GameControls(View):
         self.ctx = ctx
         self.state = state
 
-    async def handle_update(self, interaction):
-        await interaction.response.defer()
+    async def update_message(self, interaction, desc=""):
         buf = render_screen(self.state)
         file = discord.File(fp=buf, filename="game.png")
-        embed = discord.Embed(title=f"🎮 DDLC: THẾ GIỚI MỞ ({self.state.user_name})", color=0xff77aa)
+        embed = discord.Embed(title=f"🎮 DDLC: THẾ GIỚI MỞ ({self.state.user_name})", description=desc, color=0xff77aa)
         embed.set_image(url="attachment://game.png")
         await interaction.message.edit(embed=embed, attachments=[file], view=self)
 
     @discord.ui.button(label="⬆️ Lên", style=discord.ButtonStyle.blurple, row=0)
     async def btn_up(self, interaction: discord.Interaction, button: Button):
+        await interaction.response.defer()
         if self.state.mode == "POEM":
             self.state.poem_idx = (self.state.poem_idx - 1) % 4
-            await self.handle_update(interaction)
+            await self.update_message(interaction)
         elif self.state.mode == "CHAR_GAME":
             self.state.char_game_idx = (self.state.char_game_idx - 1) % 4
-            await self.handle_update(interaction)
-        else:
-            await interaction.response.defer()
+            await self.update_message(interaction)
 
     @discord.ui.button(label="⬇️ Xuống", style=discord.ButtonStyle.blurple, row=0)
     async def btn_down(self, interaction: discord.Interaction, button: Button):
+        await interaction.response.defer()
         if self.state.mode == "POEM":
             self.state.poem_idx = (self.state.poem_idx + 1) % 4
-            await self.handle_update(interaction)
+            await self.update_message(interaction)
         elif self.state.mode == "CHAR_GAME":
             self.state.char_game_idx = (self.state.char_game_idx + 1) % 4
-            await self.handle_update(interaction)
-        else:
-            await interaction.response.defer()
+            await self.update_message(interaction)
 
     @discord.ui.button(label="🅰️ Chọn / Tiếp Tục", style=discord.ButtonStyle.green, row=1)
     async def btn_a(self, interaction: discord.Interaction, button: Button):
+        await interaction.response.defer()
         st = self.state
         if st.mode == "POEM":
             chosen = st.poem_words[st.poem_idx]
@@ -232,7 +260,7 @@ class GameControls(View):
                 random.shuffle(words)
                 st.poem_words = words
                 st.poem_idx = 0
-            await self.handle_update(interaction)
+            await self.update_message(interaction)
             
         elif st.mode == "CHAR_GAME":
             game_info = CHAR_MINIGAMES[st.speaker]
@@ -242,58 +270,19 @@ class GameControls(View):
             else:
                 st.text = f"Hơi tiếc một chút, nhưng không sao đâu {st.user_name}!"
             st.mode = "STORY"
-            await self.handle_update(interaction)
+            await self.update_message(interaction)
         else:
-            await process_ai_story(self.ctx, st, f"{st.user_name} bấm tiếp tục cốt truyện.")
-            await self.handle_update(interaction)
+            await process_ai_story(st, f"{st.user_name} bấm tiếp tục câu chuyện.")
+            await self.update_message(interaction, desc=f"▶️ **{st.user_name}** đã tiếp tục câu chuyện.")
 
     @discord.ui.button(label="📝 Minigame Riêng", style=discord.ButtonStyle.danger, row=1)
     async def btn_special_game(self, interaction: discord.Interaction, button: Button):
+        await interaction.response.defer()
         st = self.state
         if st.mode == "STORY":
             st.mode = "CHAR_GAME"
             st.char_game_idx = 0
-            await self.handle_update(interaction)
-        else:
-            await interaction.response.defer()
-
-# --- XỬ LÝ CỐT TRUYỆN MỞ BẰNG AI (XOAY VÒNG 2 API KEY) ---
-async def process_ai_story(ctx, state, user_input):
-    model = get_next_ai_model()
-    if not model:
-        state.text = "Chưa cấu hình API Key trên hệ thống!"
-        return
-    
-    prompt = f"""
-    Bạn là Game Engine quản lý thế giới mở DDLC. 
-    - Tên người chơi: {state.user_name}
-    - Nhân vật hiện tại: {state.speaker}
-    - Ảnh nền hiện tại: {state.bg_image}
-    - Hành động của {state.user_name}: {user_input}
-    
-    Hãy viết một câu thoại mới phù hợp bằng tiếng Việt cho nhân vật nói với {state.user_name}, đồng thời chọn một file ảnh khớp chính xác 100% từ danh sách sau dựa theo diễn biến:
-    - 'club_monika.JPEG' | 'club_sayori.jpg' | 'club_yuri.jpg' | 'club_natsuki.JPEG'
-    - 'cafe_monika.JPEG' | 'cafe_sayori.JPEG' | 'cafe_yuri.JPEG' | 'cafe_natsuki.JPEG'
-    - 'park_monika.JPEG' | 'park_sayori.JPEG' | 'park_yuri.JPEG' | 'park_natsuki.JPEG'
-    - 'street_monika.JPEG' | 'street_sayori.JPEG' | 'street_yuri.JPEG' | 'street_natsuki.JPEG'
-    
-    Trả về ĐÚNG cấu trúc JSON gồm 3 trường: speaker, text, bg_image.
-    """
-    
-    # Thử gọi API qua key hiện tại, nếu lỗi tự động đổi key còn lại thử lại lần 2
-    for attempt in range(len(api_keys) if api_keys else 1):
-        try:
-            res = model.generate_content(prompt)
-            data = json.loads(res.text.strip())
-            
-            state.speaker = data.get("speaker", state.speaker)
-            state.text = data.get("text", state.text)
-            state.bg_image = data.get("bg_image", state.bg_image)
-            return
-        except Exception as e:
-            print(f"Lỗi AI với Key hiện tại (Lần thử {attempt+1}): {e}")
-            # Lấy model với key tiếp theo để thử lại
-            model = get_next_ai_model()
+            await self.update_message(interaction, desc=f"🎮 Bắt đầu minigame với **{st.speaker}**!")
 
 # --- LỆNH CHÍNH ---
 @bot.command(name="start")
@@ -301,6 +290,10 @@ async def start_game(ctx):
     await ctx.message.delete()
     state = get_session(ctx.guild.id)
     state.game_active = True
+    state.mode = "STORY"
+    state.speaker = "Monika"
+    state.text = f"Chào mừng {state.user_name} trở lại! Hãy nói chuyện hoặc bấm nút tiếp tục nhé!"
+    state.bg_image = "club_monika.JPEG"
     
     if ctx.author.voice:
         channel = ctx.author.voice.channel
@@ -315,7 +308,7 @@ async def start_game(ctx):
 
     buf = render_screen(state)
     file = discord.File(fp=buf, filename="game.png")
-    embed = discord.Embed(title=f"🎮 DDLC: THẾ GIỚI MỞ ({state.user_name})", description="Dùng nút hoặc gõ `!chat <nội dung>` để trò chuyện!", color=0xff77aa)
+    embed = discord.Embed(title=f"🎮 DDLC: THẾ GIỚI MỞ ({state.user_name})", description="Dùng nút hoặc gõ `!chat <nội dung>` để tương tác!", color=0xff77aa)
     embed.set_image(url="attachment://game.png")
     
     view = GameControls(ctx, state)
@@ -333,9 +326,10 @@ async def player_chat(ctx, *, message: str):
     await ctx.message.delete()
     state = get_session(ctx.guild.id)
     if not state.game_active:
+        await ctx.send("⚠️ Vui lòng gõ `!start` để khởi động game trước!", delete_after=5)
         return
     
-    await process_ai_story(ctx, state, f"{state.user_name} nói/làm: {message}")
+    await process_ai_story(state, f"{state.user_name} nói/làm: {message}")
     
     buf = render_screen(state)
     file = discord.File(fp=buf, filename="game.png")
