@@ -6,17 +6,32 @@ from discord.ext import commands
 from discord.ui import Button, View
 import google.generativeai as genai
 
-# --- CẤU HÌNH API & DISCORD ---
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
-if GEMINI_API_KEY:
-    genai.configure(api_key=GEMINI_API_KEY)
-    # Dùng cấu hình ép buộc trả về JSON trực tiếp từ model
-    ai_model = genai.GenerativeModel(
+# --- CẤU HÌNH 2 MÃ API DỰ PHÒNG ---
+api_keys = []
+if os.environ.get("GEMINI_API_KEY"):
+    api_keys.append(os.environ.get("GEMINI_API_KEY"))
+if os.environ.get("GEMINI_API_KEY_2"):
+    api_keys.append(os.environ.get("GEMINI_API_KEY_2"))
+
+current_key_idx = 0
+
+def get_next_ai_model():
+    """Hàm lấy model AI theo cơ chế xoay vòng giữa các API Key"""
+    global current_key_idx
+    if not api_keys:
+        return None
+    
+    # Lấy key hiện tại cấu hình
+    active_key = api_keys[current_key_idx]
+    genai.configure(api_key=active_key)
+    
+    # Chuyển sang key tiếp theo cho lần gọi sau (xoay vòng tròn)
+    current_key_idx = (current_key_idx + 1) % len(api_keys)
+    
+    return genai.GenerativeModel(
         'gemini-1.5-flash',
         generation_config={"response_mime_type": "application/json"}
     )
-else:
-    ai_model = None
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -39,7 +54,7 @@ def get_asset(filename):
 # Flask Server giữ Bot sống 24/7 trên hosting
 app = Flask(__name__)
 @app.route('/')
-def home(): return "DDLC Open World Engine (JSON Enforced) Online!"
+def home(): return "DDLC Open World Engine (Dual API Keys) Online!"
 def run_flask(): app.run(host='0.0.0.0', port=int(os.environ.get("PORT", 10000)))
 
 # --- CƠ SỞ DỮ LIỆU MINIGAME ---
@@ -242,14 +257,15 @@ class GameControls(View):
         else:
             await interaction.response.defer()
 
-# --- XỬ LÝ CỐT TRUYỆN MỞ BẰNG AI (ÉP BUỘC JSON CHUẨN) ---
+# --- XỬ LÝ CỐT TRUYỆN MỞ BẰNG AI (XOAY VÒNG 2 API KEY) ---
 async def process_ai_story(ctx, state, user_input):
-    if not ai_model:
-        state.text = "AI chưa được cấu hình API Key!"
+    model = get_next_ai_model()
+    if not model:
+        state.text = "Chưa cấu hình API Key trên hệ thống!"
         return
     
     prompt = f"""
-    Bạn là Game Engine quản lý thế giới mở DDLC,kể lại theo góc nhìn từ chính nhân vật chính mà người chơi đang nhập vai như tựa game ddlc gốc hoặc một số bản mod. 
+    Bạn là Game Engine quản lý thế giới mở DDLC. 
     - Tên người chơi: {state.user_name}
     - Nhân vật hiện tại: {state.speaker}
     - Ảnh nền hiện tại: {state.bg_image}
@@ -263,16 +279,21 @@ async def process_ai_story(ctx, state, user_input):
     
     Trả về ĐÚNG cấu trúc JSON gồm 3 trường: speaker, text, bg_image.
     """
-    try:
-        res = ai_model.generate_content(prompt)
-        data = json.loads(res.text.strip())
-        
-        state.speaker = data.get("speaker", state.speaker)
-        state.text = data.get("text", state.text)
-        state.bg_image = data.get("bg_image", state.bg_image)
-        
-    except Exception as e:
-        print(f"Lỗi AI JSON: {e}")
+    
+    # Thử gọi API qua key hiện tại, nếu lỗi tự động đổi key còn lại thử lại lần 2
+    for attempt in range(len(api_keys) if api_keys else 1):
+        try:
+            res = model.generate_content(prompt)
+            data = json.loads(res.text.strip())
+            
+            state.speaker = data.get("speaker", state.speaker)
+            state.text = data.get("text", state.text)
+            state.bg_image = data.get("bg_image", state.bg_image)
+            return
+        except Exception as e:
+            print(f"Lỗi AI với Key hiện tại (Lần thử {attempt+1}): {e}")
+            # Lấy model với key tiếp theo để thử lại
+            model = get_next_ai_model()
 
 # --- LỆNH CHÍNH ---
 @bot.command(name="start")
