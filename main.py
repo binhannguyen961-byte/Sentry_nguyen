@@ -18,7 +18,7 @@ intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix=["!", "/"], intents=intents, help_command=None)
 
-# Thư mục chứa asset (hình ảnh, nhạc, font)
+# Thư mục chứa asset (hình ảnh ghép sẵn, nhạc, font)
 ASSETS_DIR = "assets"
 
 def get_asset(filename):
@@ -27,7 +27,7 @@ def get_asset(filename):
 # Flask Server giữ Bot sống 24/7 trên hosting
 app = Flask(__name__)
 @app.route('/')
-def home(): return "DDLC Open World Engine Online!"
+def home(): return "DDLC Open World Engine (CG Mode) Online!"
 def run_flask(): app.run(host='0.0.0.0', port=int(os.environ.get("PORT", 10000)))
 
 # --- CƠ SỞ DỮ LIỆU ---
@@ -44,7 +44,7 @@ class GameState:
         self.mode = "STORY" # STORY hoặc POEM
         self.speaker = "Monika"
         self.text = "Chào mừng Nam trở lại! Hôm nay chúng ta sẽ làm gì đây? Bấm nút hoặc dùng lệnh !chat nhé!"
-        self.location = "clubroom.jpg" # Bối cảnh mặc định trong thư mục assets
+        self.bg_image = "club_monika.jpg" # File ảnh ghép sẵn mặc định trong assets
         self.scores = {"Sayori": 0, "Yuri": 0, "Natsuki": 0, "Monika": 0}
         self.poem_words = []
         self.poem_idx = 0
@@ -58,12 +58,10 @@ def get_session(guild_id):
         game_session[guild_id] = GameState()
     return game_session[guild_id]
 
-# --- HÀM VẼ GIAO DIỆN (RENDER SCREEN) ---
+# --- HÀM VẼ GIAO DIỆN VỚI ẢNH GHÉP SẴN ---
 def render_screen(state):
     img_w, img_h = 600, 400
-    img = Image.new("RGB", (img_w, img_h), (35, 25, 45))
-    draw = ImageDraw.Draw(img)
-
+    
     # Nạp Font chữ tiếng Việt từ thư mục assets
     font_file = get_asset("font_regular.ttf")
     try:
@@ -75,20 +73,11 @@ def render_screen(state):
     except:
         font_name = font_text = ImageFont.load_default()
 
-    # 1. Vẽ Background từ thư mục assets
-    bg_path = get_asset(state.location)
-    if os.path.exists(bg_path):
-        try:
-            bg_img = Image.open(bg_path).convert("RGBA")
-            bg_img = bg_img.resize((img_w, img_h))
-            img.paste(bg_img, (0, 0))
-        except Exception as e:
-            print(f"Lỗi load BG: {e}")
-    else:
-        draw.rectangle([10, 10, img_w - 10, img_h - 10], outline=(255, 150, 200), width=2)
-
     if state.mode == "POEM":
-        # Màn hình làm thơ
+        # Màn hình làm thơ (Dùng nền màu tối cho dễ nhìn chữ)
+        img = Image.new("RGB", (img_w, img_h), (25, 20, 35))
+        draw = ImageDraw.Draw(img)
+        
         draw.rectangle([40, 20, 560, 380], fill=(20, 15, 30), outline=(255, 100, 180), width=2)
         draw.text((180, 35), f"📝 POEM MINIGAME ({state.poem_count} từ)", fill=(255, 150, 200), font=font_name)
         
@@ -99,20 +88,22 @@ def render_screen(state):
             draw.text((100, cy + 10), f"{idx+1}. {item['word']}", fill=(255, 255, 255), font=font_text)
             
     else:
-        # 2. Vẽ Sprite Nhân vật từ thư mục assets
-        char_path = get_asset(f"{state.speaker.lower()}.png")
-        if os.path.exists(char_path):
+        # 1. Nạp ảnh ghép sẵn trọn gói (Background + Nhân vật)
+        bg_path = get_asset(state.bg_image)
+        if os.path.exists(bg_path):
             try:
-                char_img = Image.open(char_path).convert("RGBA")
-                char_img = char_img.resize((220, 320))
-                img.paste(char_img, (190, 30), char_img)
+                img = Image.open(bg_path).convert("RGB")
+                img = img.resize((img_w, img_h))
             except Exception as e:
-                print(f"Lỗi load Char: {e}")
+                print(f"Lỗi load ảnh ghép sẵn: {e}")
+                img = Image.new("RGB", (img_w, img_h), (35, 25, 45))
         else:
-            draw.rectangle([210, 60, 390, 250], fill=(60, 40, 70), outline=(255, 180, 200), width=2)
-            draw.text((230, 140), f"[{state.speaker}]", fill=(255, 180, 200), font=font_name)
+            # Fallback nếu chưa có file ảnh ghép
+            img = Image.new("RGB", (img_w, img_h), (35, 25, 45))
+
+        draw = ImageDraw.Draw(img)
             
-        # 3. Khung thoại (Dialogue Box)
+        # 2. Khung thoại (Dialogue Box) đè lên phía dưới ảnh
         box_y1 = 250
         draw.rectangle([15, box_y1, 585, 385], fill=(20, 15, 30), outline=(255, 100, 180), width=3)
         
@@ -205,18 +196,26 @@ async def process_ai_story(ctx, state, user_input):
         return
     
     prompt = f"""
-    Bạn là Game Engine quản lý thế giới mở DDLC. Cốt truyện có thể diễn ra ở trường hoặc mở rộng ra ngoài (như quán cafe, đường phố, công viên...).
+    Bạn là Game Engine quản lý thế giới mở DDLC. 
     - Người chơi: Y/N
-    - Địa điểm hiện tại (tên file): {state.location}
-    - Điểm tình cảm: {state.scores}
+    - Nhân vật hiện tại: {state.speaker}
+    - File ảnh ghép sẵn (background + nhân vật) đang dùng: {state.bg_image}
     - Hành động của Nam: {user_input}
     
-    Tạo tình tiết tiếp theo ngắn gọn bằng tiếng Việt.
+    Hãy chọn file ảnh ghép sẵn phù hợp từ danh sách sau dựa theo ngữ cảnh diễn biến:
+    - 'club_monika.jpg' (Phòng CLB với Monika)
+    - 'club_sayori.jpg' (Phòng CLB với Sayori)
+    - 'club_yuri.jpg' (Phòng CLB với Yuri)
+    - 'club_natsuki.jpg' (Phòng CLB với Natsuki)
+    - 'cafe_date.jpg' (Buổi hẹn hò ở quán cafe)
+    - 'park_walk.jpg' (Đi dạo công viên)
+    - 'street_sunset.jpg' (Đường phố hoàng hôn)
+    
     Trả về định dạng JSON nghiêm ngặt (không kèm markdown khác):
     {{
         "speaker": "Tên nhân vật (Monika, Sayori, Yuri hoặc Natsuki)",
-        "text": "Lời thoại hoặc mô tả (tối đa 25 từ).",
-        "location": "clubroom.jpg hoặc street.jpg hoặc cafe.jpg hoặc park.jpg",
+        "text": "Lời thoại ngắn gọn bằng tiếng Việt (tối đa 25 từ).",
+        "bg_image": "Tên file ảnh ghép sẵn phù hợp trong danh sách trên",
         "bgm": "club.mp3 hoặc street.mp3 hoặc romance.mp3"
     }}
     """
@@ -227,7 +226,7 @@ async def process_ai_story(ctx, state, user_input):
         
         state.speaker = data.get("speaker", state.speaker)
         state.text = data.get("text", "...")
-        state.location = data.get("location", state.location)
+        state.bg_image = data.get("bg_image", state.bg_image)
         
         # Đổi nhạc nền qua Voice Bot nếu có file nhạc tương ứng trong assets
         if "bgm" in data and state.voice_client and state.voice_client.is_connected():
