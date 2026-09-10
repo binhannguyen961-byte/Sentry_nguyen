@@ -1,8 +1,5 @@
-discord.py
-Flask
-Pillow
-opencv-python-headless
-gTTS
-SpeechRecognition
-pydub
-google-generativeai
+discord.py[voice]>=2.3.2
+Pillow>=10.0.0
+google-generativeai>=0.3.0
+Flask>=3.0.0
+PyNaCl>=1.5.0
