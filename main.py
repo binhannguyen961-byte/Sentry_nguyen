@@ -35,10 +35,10 @@ def get_asset(filename):
 # Flask Server giữ Bot sống 24/7 trên hosting
 app = Flask(__name__)
 @app.route('/')
-def home(): return "DDLC Open World Engine (Y/N & Minigames) Online!"
+def home(): return "DDLC Open World Engine (Fixed AI) Online!"
 def run_flask(): app.run(host='0.0.0.0', port=int(os.environ.get("PORT", 10000)))
 
-# --- CƠ SỞ DỮ LIỆU MINIGAME CHO TỪNG NHÂN VẬT ---
+# --- CƠ SỞ DỮ LIỆU MINIGAME ---
 POEM_WORDS = {
     "Sayori": ["Nắng", "Hạnh phúc", "Cầu vồng", "Ấm áp", "Bạn bè", "Nụ cười", "Mây"],
     "Yuri": ["Bí ẩn", "U tối", "Sâu thẳm", "Triết học", "Đam mê", "Trà", "Đêm"],
@@ -74,20 +74,16 @@ class GameState:
         self.game_active = False
         self.mode = "STORY" # STORY, POEM, hoặc CHAR_GAME
         self.speaker = "Monika"
-        self.user_name = "Y/N" # Có thể thay đổi bằng lệnh !name
-        self.text = "Chào mừng Y/N trở lại! Hôm nay chúng ta sẽ cùng nhau khám phá thế giới này nhé!"
+        self.user_name = "Y/N"
+        self.text = "Chào mừng Y/N trở lại! Hãy nói chuyện hoặc chọn hành động nhé!"
         self.bg_image = "club_monika.JPEG"
         self.scores = {"Sayori": 0, "Yuri": 0, "Natsuki": 0, "Monika": 0}
         
-        # Dữ liệu minigame chung (Poem)
         self.poem_words = []
         self.poem_idx = 0
         self.poem_count = 5
         
-        # Dữ liệu minigame riêng của nhân vật
-        self.char_game_data = None
         self.char_game_idx = 0
-        
         self.last_msg = None
         self.voice_client = None
 
@@ -126,7 +122,7 @@ def render_screen(state):
     elif state.mode == "CHAR_GAME":
         img = Image.new("RGB", (img_w, img_h), (30, 20, 40))
         draw = ImageDraw.Draw(img)
-        game_info = CHAR_MINIGAMES[state.speaker]
+        game_info = CHAR_MINIGAMES.get(state.speaker, CHAR_MINIGAMES["Monika"])
         
         draw.rectangle([40, 20, 560, 380], fill=(20, 15, 30), outline=(100, 200, 255), width=2)
         draw.text((130, 35), game_info["title"], fill=(150, 220, 255), font=font_name)
@@ -143,7 +139,7 @@ def render_screen(state):
                 img = Image.open(bg_path).convert("RGB")
                 img = img.resize((img_w, img_h))
             except Exception as e:
-                print(f"Lỗi load ảnh: {e}")
+                print(f"Lỗi load ảnh {state.bg_image}: {e}")
                 img = Image.new("RGB", (img_w, img_h), (35, 25, 45))
         else:
             img = Image.new("RGB", (img_w, img_h), (35, 25, 45))
@@ -242,7 +238,7 @@ class GameControls(View):
         else:
             await interaction.response.defer()
 
-# --- XỬ LÝ CỐT TRUYỆN MỞ BẰNG AI ---
+# --- XỬ LÝ CỐT TRUYỆN MỞ BẰNG AI (ĐÃ FIX AN TOÀN) ---
 async def process_ai_story(ctx, state, user_input):
     if not ai_model:
         state.text = "AI chưa được cấu hình API Key!"
@@ -250,43 +246,47 @@ async def process_ai_story(ctx, state, user_input):
     
     prompt = f"""
     Bạn là Game Engine quản lý thế giới mở DDLC. 
-    - Tên người chơi: {state.user_name} (Hãy xưng hô bằng tên này hoặc Y/N).
+    - Tên người chơi: {state.user_name}
     - Nhân vật hiện tại: {state.speaker}
     - Ảnh nền hiện tại: {state.bg_image}
     - Hành động của {state.user_name}: {user_input}
     
-    Hãy chọn file ảnh ghép sẵn chính xác từ danh sách các file sau dựa theo diễn biến câu chuyện:
+    Hãy chọn file ảnh khớp chính xác 100% từ danh sách sau dựa theo diễn biến câu chuyện:
     - 'club_monika.JPEG' | 'club_sayori.jpg' | 'club_yuri.jpg' | 'club_natsuki.JPEG'
     - 'cafe_monika.JPEG' | 'cafe_sayori.JPEG' | 'cafe_yuri.JPEG' | 'cafe_natsuki.JPEG'
     - 'park_monika.JPEG' | 'park_sayori.JPEG' | 'park_yuri.JPEG' | 'park_natsuki.JPEG'
     - 'street_monika.JPEG' | 'street_sayori.JPEG' | 'street_yuri.JPEG' | 'street_natsuki.JPEG'
     
-    Trả về định dạng JSON nghiêm ngặt (không kèm markdown khác):
+    BẮT BUỘC TRẢ VỀ ĐÚNG ĐỊNH DẠNG JSON (Không kèm text ngoài, không dùng markdown ```json):
     {{
-        "speaker": "Tên nhân vật (Monika, Sayori, Yuri hoặc Natsuki)",
-        "text": "Lời thoại ngắn gọn bằng tiếng Việt tương tác trực tiếp với {state.user_name} (tối đa 25 từ).",
-        "bg_image": "Tên file ảnh khớp chính xác 100% trong danh sách trên",
-        "bgm": "club.mp3 hoặc street.mp3 hoặc romance.mp3"
+        "speaker": "Monika hoặc Sayori hoặc Yuri hoặc Natsuki",
+        "text": "Lời thoại tiếng Việt tương tác với {state.user_name}, tối đa 25 từ.",
+        "bg_image": "tên_file_chính_xác_ở_trên.JPEG"
     }}
     """
     try:
         res = ai_model.generate_content(prompt)
-        raw_text = res.text.replace("```json", "").replace("```", "").strip()
-        data = json.loads(raw_text)
+        raw_text = res.text.strip()
+        # Dọn dẹp markdown nếu AI lỡ sinh ra
+        if raw_text.startswith("```"):
+            raw_text = raw_text.split("```")[1]
+            if raw_text.startswith("json"):
+                raw_text = raw_text[4:].strip()
         
+        data = json.loads(raw_text)
         state.speaker = data.get("speaker", state.speaker)
-        state.text = data.get("text", "...")
+        state.text = data.get("text", state.text)
         state.bg_image = data.get("bg_image", state.bg_image)
         
-        if "bgm" in data and state.voice_client and state.voice_client.is_connected():
-            bgm_file = get_asset(data["bgm"])
-            if os.path.exists(bgm_file):
-                if state.voice_client.is_playing():
-                    state.voice_client.stop()
-                state.voice_client.play(discord.FFmpegPCMAudio(bgm_file))
     except Exception as e:
-        print(f"Lỗi AI: {e}")
-        state.text = f"Mọi người đang rất vui vì có {state.user_name} ở đây..."
+        print(f"Lỗi parse AI JSON: {e}")
+        # Fallback ngẫu nhiên để đổi cảnh khi lỗi
+        all_chars = ["Monika", "Sayori", "Yuri", "Natsuki"]
+        locs = ["club", "cafe", "park", "street"]
+        state.speaker = random.choice(all_chars)
+        chosen_loc = random.choice(locs)
+        state.bg_image = f"{chosen_loc}_{state.speaker.lower()}.JPEG"
+        state.text = f"{state.user_name} vừa làm mọi người bất ngờ đấy!"
 
 # --- LỆNH CHÍNH ---
 @bot.command(name="start")
@@ -316,7 +316,6 @@ async def start_game(ctx):
 
 @bot.command(name="name")
 async def set_username(ctx, *, name: str):
-    """Lệnh đổi tên người dùng, ví dụ: !name Nam"""
     await ctx.message.delete()
     state = get_session(ctx.guild.id)
     state.user_name = name.strip()
