@@ -10,7 +10,11 @@ import google.generativeai as genai
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 if GEMINI_API_KEY:
     genai.configure(api_key=GEMINI_API_KEY)
-    ai_model = genai.GenerativeModel('gemini-1.5-flash')
+    # Dùng cấu hình ép buộc trả về JSON trực tiếp từ model
+    ai_model = genai.GenerativeModel(
+        'gemini-1.5-flash',
+        generation_config={"response_mime_type": "application/json"}
+    )
 else:
     ai_model = None
 
@@ -35,7 +39,7 @@ def get_asset(filename):
 # Flask Server giữ Bot sống 24/7 trên hosting
 app = Flask(__name__)
 @app.route('/')
-def home(): return "DDLC Open World Engine (Fixed AI) Online!"
+def home(): return "DDLC Open World Engine (JSON Enforced) Online!"
 def run_flask(): app.run(host='0.0.0.0', port=int(os.environ.get("PORT", 10000)))
 
 # --- CƠ SỞ DỮ LIỆU MINIGAME ---
@@ -72,7 +76,7 @@ CHAR_MINIGAMES = {
 class GameState:
     def __init__(self):
         self.game_active = False
-        self.mode = "STORY" # STORY, POEM, hoặc CHAR_GAME
+        self.mode = "STORY"
         self.speaker = "Monika"
         self.user_name = "Y/N"
         self.text = "Chào mừng Y/N trở lại! Hãy nói chuyện hoặc chọn hành động nhé!"
@@ -219,9 +223,9 @@ class GameControls(View):
             game_info = CHAR_MINIGAMES[st.speaker]
             if st.char_game_idx == game_info["correct"]:
                 st.scores[st.speaker] += 2
-                st.text = f"{st.speaker}: Tuyệt đỉnh! {st.user_name} hiểu tớ quá đi mất!"
+                st.text = f"Tuyệt đỉnh! {st.user_name} hiểu tớ quá đi mất!"
             else:
-                st.text = f"{st.speaker}: Hơi tiếc một chút, nhưng không sao đâu {st.user_name}!"
+                st.text = f"Hơi tiếc một chút, nhưng không sao đâu {st.user_name}!"
             st.mode = "STORY"
             await self.handle_update(interaction)
         else:
@@ -238,55 +242,37 @@ class GameControls(View):
         else:
             await interaction.response.defer()
 
-# --- XỬ LÝ CỐT TRUYỆN MỞ BẰNG AI (ĐÃ FIX AN TOÀN) ---
+# --- XỬ LÝ CỐT TRUYỆN MỞ BẰNG AI (ÉP BUỘC JSON CHUẨN) ---
 async def process_ai_story(ctx, state, user_input):
     if not ai_model:
         state.text = "AI chưa được cấu hình API Key!"
         return
     
     prompt = f"""
-    Bạn là Game Engine quản lý thế giới mở DDLC. 
+    Bạn là Game Engine quản lý thế giới mở DDLC,kể lại theo góc nhìn từ chính nhân vật chính mà người chơi đang nhập vai như tựa game ddlc gốc hoặc một số bản mod. 
     - Tên người chơi: {state.user_name}
     - Nhân vật hiện tại: {state.speaker}
     - Ảnh nền hiện tại: {state.bg_image}
     - Hành động của {state.user_name}: {user_input}
     
-    Hãy chọn file ảnh khớp chính xác 100% từ danh sách sau dựa theo diễn biến câu chuyện:
+    Hãy viết một câu thoại mới phù hợp bằng tiếng Việt cho nhân vật nói với {state.user_name}, đồng thời chọn một file ảnh khớp chính xác 100% từ danh sách sau dựa theo diễn biến:
     - 'club_monika.JPEG' | 'club_sayori.jpg' | 'club_yuri.jpg' | 'club_natsuki.JPEG'
     - 'cafe_monika.JPEG' | 'cafe_sayori.JPEG' | 'cafe_yuri.JPEG' | 'cafe_natsuki.JPEG'
     - 'park_monika.JPEG' | 'park_sayori.JPEG' | 'park_yuri.JPEG' | 'park_natsuki.JPEG'
     - 'street_monika.JPEG' | 'street_sayori.JPEG' | 'street_yuri.JPEG' | 'street_natsuki.JPEG'
     
-    BẮT BUỘC TRẢ VỀ ĐÚNG ĐỊNH DẠNG JSON (Không kèm text ngoài, không dùng markdown ```json):
-    {{
-        "speaker": "Monika hoặc Sayori hoặc Yuri hoặc Natsuki",
-        "text": "Lời thoại tiếng Việt tương tác với {state.user_name}, tối đa 25 từ.",
-        "bg_image": "tên_file_chính_xác_ở_trên.JPEG"
-    }}
+    Trả về ĐÚNG cấu trúc JSON gồm 3 trường: speaker, text, bg_image.
     """
     try:
         res = ai_model.generate_content(prompt)
-        raw_text = res.text.strip()
-        # Dọn dẹp markdown nếu AI lỡ sinh ra
-        if raw_text.startswith("```"):
-            raw_text = raw_text.split("```")[1]
-            if raw_text.startswith("json"):
-                raw_text = raw_text[4:].strip()
+        data = json.loads(res.text.strip())
         
-        data = json.loads(raw_text)
         state.speaker = data.get("speaker", state.speaker)
         state.text = data.get("text", state.text)
         state.bg_image = data.get("bg_image", state.bg_image)
         
     except Exception as e:
-        print(f"Lỗi parse AI JSON: {e}")
-        # Fallback ngẫu nhiên để đổi cảnh khi lỗi
-        all_chars = ["Monika", "Sayori", "Yuri", "Natsuki"]
-        locs = ["club", "cafe", "park", "street"]
-        state.speaker = random.choice(all_chars)
-        chosen_loc = random.choice(locs)
-        state.bg_image = f"{chosen_loc}_{state.speaker.lower()}.JPEG"
-        state.text = f"{state.user_name} vừa làm mọi người bất ngờ đấy!"
+        print(f"Lỗi AI JSON: {e}")
 
 # --- LỆNH CHÍNH ---
 @bot.command(name="start")
