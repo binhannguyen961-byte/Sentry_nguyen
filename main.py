@@ -206,7 +206,7 @@ async def process_ai_story(ctx, state, user_input):
     
     prompt = f"""
     Bạn là Game Engine quản lý thế giới mở DDLC. Cốt truyện có thể diễn ra ở trường hoặc mở rộng ra ngoài (như quán cafe, đường phố, công viên...).
-    - Người chơi: Nam.
+    - Người chơi: Y/N
     - Địa điểm hiện tại (tên file): {state.location}
     - Điểm tình cảm: {state.scores}
     - Hành động của Nam: {user_input}
