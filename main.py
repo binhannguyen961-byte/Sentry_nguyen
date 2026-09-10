@@ -18,19 +18,27 @@ intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix=["!", "/"], intents=intents, help_command=None)
 
-# Thư mục chứa asset (hình ảnh ghép sẵn, nhạc, font)
 ASSETS_DIR = "assets"
 
 def get_asset(filename):
-    return os.path.join(ASSETS_DIR, filename)
+    base_path = os.path.join(ASSETS_DIR, filename)
+    if os.path.exists(base_path):
+        return base_path
+    name_root, ext = os.path.splitext(filename)
+    variants = [ext.lower(), ext.upper(), ".jpg", ".JPG", ".jpeg", ".JPEG", ".png", ".PNG"]
+    for v in variants:
+        alt_path = os.path.join(ASSETS_DIR, name_root + v)
+        if os.path.exists(alt_path):
+            return alt_path
+    return base_path
 
 # Flask Server giữ Bot sống 24/7 trên hosting
 app = Flask(__name__)
 @app.route('/')
-def home(): return "DDLC Open World Engine (CG Mode) Online!"
+def home(): return "DDLC Open World Engine (Y/N & Minigames) Online!"
 def run_flask(): app.run(host='0.0.0.0', port=int(os.environ.get("PORT", 10000)))
 
-# --- CƠ SỞ DỮ LIỆU ---
+# --- CƠ SỞ DỮ LIỆU MINIGAME CHO TỪNG NHÂN VẬT ---
 POEM_WORDS = {
     "Sayori": ["Nắng", "Hạnh phúc", "Cầu vồng", "Ấm áp", "Bạn bè", "Nụ cười", "Mây"],
     "Yuri": ["Bí ẩn", "U tối", "Sâu thẳm", "Triết học", "Đam mê", "Trà", "Đêm"],
@@ -38,17 +46,48 @@ POEM_WORDS = {
     "Monika": ["Tương lai", "Thực tại", "Tình yêu", "Lập trình", "Tự do", "Vĩnh cửu"]
 }
 
+CHAR_MINIGAMES = {
+    "Sayori": {
+        "title": "🌈 Đuổi Bắt Cảm Xúc (Sayori)",
+        "choices": ["Ôm ấp động viên", "Kể chuyện cười", "Tặng kẹo ngọt", "Lắng nghe tâm sự"],
+        "correct": 0
+    },
+    "Yuri": {
+        "title": "📖 Giải Mã Triết Học (Yuri)",
+        "choices": ["Vũ trụ và ý thức", "Bản ngã con người", "Thời gian vô tận", "Bóng tối tâm hồn"],
+        "correct": 2
+    },
+    "Natsuki": {
+        "title": "🧁 Nướng Cupcake (Natsuki)",
+        "choices": ["Thêm đường bột", "Đánh bông kem", "Trang trí dâu tây", "Nướng lò 180°C"],
+        "correct": 2
+    },
+    "Monika": {
+        "title": "💻 Gỡ Lỗi Python (Monika)",
+        "choices": ["import love", "print(Y/N)", "while True: run()", "os.remove(barriers)"],
+        "correct": 3
+    }
+}
+
 class GameState:
     def __init__(self):
         self.game_active = False
-        self.mode = "STORY" # STORY hoặc POEM
+        self.mode = "STORY" # STORY, POEM, hoặc CHAR_GAME
         self.speaker = "Monika"
-        self.text = "Chào mừng Nam trở lại! Hôm nay chúng ta sẽ làm gì đây? Bấm nút hoặc dùng lệnh !chat nhé!"
-        self.bg_image = "club_monika.jpg" # File ảnh ghép sẵn mặc định trong assets
+        self.user_name = "Y/N" # Có thể thay đổi bằng lệnh !name
+        self.text = "Chào mừng Y/N trở lại! Hôm nay chúng ta sẽ cùng nhau khám phá thế giới này nhé!"
+        self.bg_image = "club_monika.JPEG"
         self.scores = {"Sayori": 0, "Yuri": 0, "Natsuki": 0, "Monika": 0}
+        
+        # Dữ liệu minigame chung (Poem)
         self.poem_words = []
         self.poem_idx = 0
         self.poem_count = 5
+        
+        # Dữ liệu minigame riêng của nhân vật
+        self.char_game_data = None
+        self.char_game_idx = 0
+        
         self.last_msg = None
         self.voice_client = None
 
@@ -58,11 +97,10 @@ def get_session(guild_id):
         game_session[guild_id] = GameState()
     return game_session[guild_id]
 
-# --- HÀM VẼ GIAO DIỆN VỚI ẢNH GHÉP SẴN ---
+# --- HÀM VẼ GIAO DIỆN ---
 def render_screen(state):
     img_w, img_h = 600, 400
     
-    # Nạp Font chữ tiếng Việt từ thư mục assets
     font_file = get_asset("font_regular.ttf")
     try:
         if os.path.exists(font_file):
@@ -74,12 +112,10 @@ def render_screen(state):
         font_name = font_text = ImageFont.load_default()
 
     if state.mode == "POEM":
-        # Màn hình làm thơ (Dùng nền màu tối cho dễ nhìn chữ)
         img = Image.new("RGB", (img_w, img_h), (25, 20, 35))
         draw = ImageDraw.Draw(img)
-        
         draw.rectangle([40, 20, 560, 380], fill=(20, 15, 30), outline=(255, 100, 180), width=2)
-        draw.text((180, 35), f"📝 POEM MINIGAME ({state.poem_count} từ)", fill=(255, 150, 200), font=font_name)
+        draw.text((160, 35), f"📝 POEM MINIGAME ({state.poem_count} từ)", fill=(255, 150, 200), font=font_name)
         
         for idx, item in enumerate(state.poem_words):
             cy = 90 + idx * 55
@@ -87,26 +123,35 @@ def render_screen(state):
             draw.rectangle([80, cy, 520, cy + 45], fill=color, outline=(255, 180, 220), width=1)
             draw.text((100, cy + 10), f"{idx+1}. {item['word']}", fill=(255, 255, 255), font=font_text)
             
+    elif state.mode == "CHAR_GAME":
+        img = Image.new("RGB", (img_w, img_h), (30, 20, 40))
+        draw = ImageDraw.Draw(img)
+        game_info = CHAR_MINIGAMES[state.speaker]
+        
+        draw.rectangle([40, 20, 560, 380], fill=(20, 15, 30), outline=(100, 200, 255), width=2)
+        draw.text((130, 35), game_info["title"], fill=(150, 220, 255), font=font_name)
+        
+        for idx, choice_text in enumerate(game_info["choices"]):
+            cy = 90 + idx * 65
+            color = (80, 140, 200) if idx == state.char_game_idx else (40, 30, 60)
+            draw.rectangle([80, cy, 520, cy + 50], fill=color, outline=(150, 200, 255), width=1)
+            draw.text((100, cy + 12), f"• {choice_text}", fill=(255, 255, 255), font=font_text)
     else:
-        # 1. Nạp ảnh ghép sẵn trọn gói (Background + Nhân vật)
         bg_path = get_asset(state.bg_image)
         if os.path.exists(bg_path):
             try:
                 img = Image.open(bg_path).convert("RGB")
                 img = img.resize((img_w, img_h))
             except Exception as e:
-                print(f"Lỗi load ảnh ghép sẵn: {e}")
+                print(f"Lỗi load ảnh: {e}")
                 img = Image.new("RGB", (img_w, img_h), (35, 25, 45))
         else:
-            # Fallback nếu chưa có file ảnh ghép
             img = Image.new("RGB", (img_w, img_h), (35, 25, 45))
 
         draw = ImageDraw.Draw(img)
             
-        # 2. Khung thoại (Dialogue Box) đè lên phía dưới ảnh
         box_y1 = 250
         draw.rectangle([15, box_y1, 585, 385], fill=(20, 15, 30), outline=(255, 100, 180), width=3)
-        
         draw.rectangle([25, box_y1 - 18, 180, box_y1 + 15], fill=(255, 100, 180))
         draw.text((35, box_y1 - 14), state.speaker, fill=(255, 255, 255), font=font_name)
         
@@ -129,7 +174,7 @@ class GameControls(View):
         await interaction.response.defer()
         buf = render_screen(self.state)
         file = discord.File(fp=buf, filename="game.png")
-        embed = discord.Embed(title="🎮 DDLC: THẾ GIỚI MỞ", color=0xff77aa)
+        embed = discord.Embed(title=f"🎮 DDLC: THẾ GIỚI MỞ ({self.state.user_name})", color=0xff77aa)
         embed.set_image(url="attachment://game.png")
         await interaction.message.edit(embed=embed, attachments=[file], view=self)
 
@@ -138,6 +183,9 @@ class GameControls(View):
         if self.state.mode == "POEM":
             self.state.poem_idx = (self.state.poem_idx - 1) % 4
             await self.handle_update(interaction)
+        elif self.state.mode == "CHAR_GAME":
+            self.state.char_game_idx = (self.state.char_game_idx - 1) % 4
+            await self.handle_update(interaction)
         else:
             await interaction.response.defer()
 
@@ -145,6 +193,9 @@ class GameControls(View):
     async def btn_down(self, interaction: discord.Interaction, button: Button):
         if self.state.mode == "POEM":
             self.state.poem_idx = (self.state.poem_idx + 1) % 4
+            await self.handle_update(interaction)
+        elif self.state.mode == "CHAR_GAME":
+            self.state.char_game_idx = (self.state.char_game_idx + 1) % 4
             await self.handle_update(interaction)
         else:
             await interaction.response.defer()
@@ -160,31 +211,33 @@ class GameControls(View):
                 st.mode = "STORY"
                 best_char = max(st.scores, key=st.scores.get)
                 st.speaker = best_char
-                st.text = f"Bài thơ Nam viết tuyệt quá! Tớ rất thích những cảm xúc này."
+                st.text = f"Bài thơ tuyệt vời quá, {st.user_name}!"
             else:
-                words = []
-                for c, w_list in POEM_WORDS.items():
-                    words.append({"word": random.choice(w_list), "char": c})
+                words = [{"word": random.choice(w_list), "char": c} for c, w_list in POEM_WORDS.items()]
                 random.shuffle(words)
                 st.poem_words = words
                 st.poem_idx = 0
             await self.handle_update(interaction)
+            
+        elif st.mode == "CHAR_GAME":
+            game_info = CHAR_MINIGAMES[st.speaker]
+            if st.char_game_idx == game_info["correct"]:
+                st.scores[st.speaker] += 2
+                st.text = f"{st.speaker}: Tuyệt đỉnh! {st.user_name} hiểu tớ quá đi mất!"
+            else:
+                st.text = f"{st.speaker}: Hơi tiếc một chút, nhưng không sao đâu {st.user_name}!"
+            st.mode = "STORY"
+            await self.handle_update(interaction)
         else:
-            await process_ai_story(self.ctx, st, "Người chơi ấn tiếp tục cốt truyện.")
+            await process_ai_story(self.ctx, st, f"{st.user_name} bấm tiếp tục cốt truyện.")
             await self.handle_update(interaction)
 
-    @discord.ui.button(label="📝 Viết Thơ", style=discord.ButtonStyle.danger, row=1)
-    async def btn_poem(self, interaction: discord.Interaction, button: Button):
+    @discord.ui.button(label="📝 Minigame Riêng", style=discord.ButtonStyle.danger, row=1)
+    async def btn_special_game(self, interaction: discord.Interaction, button: Button):
         st = self.state
         if st.mode == "STORY":
-            st.mode = "POEM"
-            st.poem_count = 5
-            st.poem_idx = 0
-            words = []
-            for c, w_list in POEM_WORDS.items():
-                words.append({"word": random.choice(w_list), "char": c})
-            random.shuffle(words)
-            st.poem_words = words
+            st.mode = "CHAR_GAME"
+            st.char_game_idx = 0
             await self.handle_update(interaction)
         else:
             await interaction.response.defer()
@@ -197,25 +250,22 @@ async def process_ai_story(ctx, state, user_input):
     
     prompt = f"""
     Bạn là Game Engine quản lý thế giới mở DDLC. 
-    - Người chơi: Y/N
+    - Tên người chơi: {state.user_name} (Hãy xưng hô bằng tên này hoặc Y/N).
     - Nhân vật hiện tại: {state.speaker}
-    - File ảnh ghép sẵn (background + nhân vật) đang dùng: {state.bg_image}
-    - Hành động của Nam: {user_input}
+    - Ảnh nền hiện tại: {state.bg_image}
+    - Hành động của {state.user_name}: {user_input}
     
-    Hãy chọn file ảnh ghép sẵn phù hợp từ danh sách sau dựa theo ngữ cảnh diễn biến:
-    - 'club_monika.jpg' (Phòng CLB với Monika)
-    - 'club_sayori.jpg' (Phòng CLB với Sayori)
-    - 'club_yuri.jpg' (Phòng CLB với Yuri)
-    - 'club_natsuki.jpg' (Phòng CLB với Natsuki)
-    - 'cafe_date.jpg' (Buổi hẹn hò ở quán cafe)
-    - 'park_walk.jpg' (Đi dạo công viên)
-    - 'street_sunset.jpg' (Đường phố hoàng hôn)
+    Hãy chọn file ảnh ghép sẵn chính xác từ danh sách các file sau dựa theo diễn biến câu chuyện:
+    - 'club_monika.JPEG' | 'club_sayori.jpg' | 'club_yuri.jpg' | 'club_natsuki.JPEG'
+    - 'cafe_monika.JPEG' | 'cafe_sayori.JPEG' | 'cafe_yuri.JPEG' | 'cafe_natsuki.JPEG'
+    - 'park_monika.JPEG' | 'park_sayori.JPEG' | 'park_yuri.JPEG' | 'park_natsuki.JPEG'
+    - 'street_monika.JPEG' | 'street_sayori.JPEG' | 'street_yuri.JPEG' | 'street_natsuki.JPEG'
     
     Trả về định dạng JSON nghiêm ngặt (không kèm markdown khác):
     {{
         "speaker": "Tên nhân vật (Monika, Sayori, Yuri hoặc Natsuki)",
-        "text": "Lời thoại ngắn gọn bằng tiếng Việt (tối đa 25 từ).",
-        "bg_image": "Tên file ảnh ghép sẵn phù hợp trong danh sách trên",
+        "text": "Lời thoại ngắn gọn bằng tiếng Việt tương tác trực tiếp với {state.user_name} (tối đa 25 từ).",
+        "bg_image": "Tên file ảnh khớp chính xác 100% trong danh sách trên",
         "bgm": "club.mp3 hoặc street.mp3 hoặc romance.mp3"
     }}
     """
@@ -228,7 +278,6 @@ async def process_ai_story(ctx, state, user_input):
         state.text = data.get("text", "...")
         state.bg_image = data.get("bg_image", state.bg_image)
         
-        # Đổi nhạc nền qua Voice Bot nếu có file nhạc tương ứng trong assets
         if "bgm" in data and state.voice_client and state.voice_client.is_connected():
             bgm_file = get_asset(data["bgm"])
             if os.path.exists(bgm_file):
@@ -237,7 +286,7 @@ async def process_ai_story(ctx, state, user_input):
                 state.voice_client.play(discord.FFmpegPCMAudio(bgm_file))
     except Exception as e:
         print(f"Lỗi AI: {e}")
-        state.text = "Mọi người đang chăm chú lắng nghe bạn..."
+        state.text = f"Mọi người đang rất vui vì có {state.user_name} ở đây..."
 
 # --- LỆNH CHÍNH ---
 @bot.command(name="start")
@@ -246,7 +295,6 @@ async def start_game(ctx):
     state = get_session(ctx.guild.id)
     state.game_active = True
     
-    # Kết nối vào phòng Voice để phát nhạc nền
     if ctx.author.voice:
         channel = ctx.author.voice.channel
         try:
@@ -260,11 +308,19 @@ async def start_game(ctx):
 
     buf = render_screen(state)
     file = discord.File(fp=buf, filename="game.png")
-    embed = discord.Embed(title="🎮 DDLC: THẾ GIỚI MỞ", description="Sử dụng các nút bên dưới hoặc gõ lệnh `!chat <nội dung>` để trò chuyện!", color=0xff77aa)
+    embed = discord.Embed(title=f"🎮 DDLC: THẾ GIỚI MỞ ({state.user_name})", description="Dùng nút hoặc gõ `!chat <nội dung>` để trò chuyện!", color=0xff77aa)
     embed.set_image(url="attachment://game.png")
     
     view = GameControls(ctx, state)
     state.last_msg = await ctx.send(embed=embed, file=file, view=view)
+
+@bot.command(name="name")
+async def set_username(ctx, *, name: str):
+    """Lệnh đổi tên người dùng, ví dụ: !name Nam"""
+    await ctx.message.delete()
+    state = get_session(ctx.guild.id)
+    state.user_name = name.strip()
+    await ctx.send(f"✅ Đã đổi tên người chơi thành: **{state.user_name}**", delete_after=5)
 
 @bot.command(name="chat")
 async def player_chat(ctx, *, message: str):
@@ -273,11 +329,11 @@ async def player_chat(ctx, *, message: str):
     if not state.game_active:
         return
     
-    await process_ai_story(ctx, state, f"Nam nói/làm: {message}")
+    await process_ai_story(ctx, state, f"{state.user_name} nói/làm: {message}")
     
     buf = render_screen(state)
     file = discord.File(fp=buf, filename="game.png")
-    embed = discord.Embed(title="🎮 DDLC: THẾ GIỚI MỞ", description=f"🗣️ **Nam:** {message}", color=0xff77aa)
+    embed = discord.Embed(title=f"🎮 DDLC: THẾ GIỚI MỞ ({state.user_name})", description=f"🗣️ **{state.user_name}:** {message}", color=0xff77aa)
     embed.set_image(url="attachment://game.png")
     
     if state.last_msg:
