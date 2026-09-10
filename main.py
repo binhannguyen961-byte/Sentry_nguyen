@@ -172,8 +172,8 @@ async def open_game(ctx, *, game_name: str = None):
         "reason": "Lý do ngắn gọn nếu không thể chạy (do game quá phức tạp) hoặc xác nhận chạy được nếu là mini game đơn giản",
         "game_type": "snake / pong / tictactoe / flappy / space_invaders / custom"
     }}
-    Lưu ý: Chỉ chấp nhận các mini game 2D đơn giản (Snake, Pong, Tic-Tac-Toe, Flappy Bird, Tetris, Brick Breaker...). 
-    Từ chối các game 3D, game thế giới mở hoặc quá phức tạp (như GTA, Genshin, CoD...).
+    Lưu ý: Chỉ chấp nhận các game  đơn giản (Snake, Pong, Tic-Tac-Toe, doki doki liturate club, Tetris, Brick Breaker...). 
+    Từ chối các game thế giới mở hoặc quá phức tạp (như GTA, Genshin, CoD...).
     """
     
     try:
