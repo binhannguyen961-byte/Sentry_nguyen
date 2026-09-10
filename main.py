@@ -11,12 +11,20 @@ GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 if GEMINI_API_KEY:
     genai.configure(api_key=GEMINI_API_KEY)
     ai_model = genai.GenerativeModel('gemini-1.5-flash')
+else:
+    ai_model = None
 
 intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix=["!", "/"], intents=intents, help_command=None)
 
-# Flask Server giữ Bot sống 24/7
+# Thư mục chứa asset (hình ảnh, nhạc, font)
+ASSETS_DIR = "assets"
+
+def get_asset(filename):
+    return os.path.join(ASSETS_DIR, filename)
+
+# Flask Server giữ Bot sống 24/7 trên hosting
 app = Flask(__name__)
 @app.route('/')
 def home(): return "DDLC Open World Engine Online!"
@@ -35,8 +43,8 @@ class GameState:
         self.game_active = False
         self.mode = "STORY" # STORY hoặc POEM
         self.speaker = "Monika"
-        self.text = "Chào mừng Nam trở lại! Hôm nay chúng ta sẽ làm gì đây?"
-        self.location = "clubroom.jpg" # Bối cảnh mặc định
+        self.text = "Chào mừng Nam trở lại! Hôm nay chúng ta sẽ làm gì đây? Bấm nút hoặc dùng lệnh !chat nhé!"
+        self.location = "clubroom.jpg" # Bối cảnh mặc định trong thư mục assets
         self.scores = {"Sayori": 0, "Yuri": 0, "Natsuki": 0, "Monika": 0}
         self.poem_words = []
         self.poem_idx = 0
@@ -50,55 +58,69 @@ def get_session(guild_id):
         game_session[guild_id] = GameState()
     return game_session[guild_id]
 
-# --- HÀM VẼ GIAO DIỆN (CÓ HÌNH NỀN) ---
+# --- HÀM VẼ GIAO DIỆN (RENDER SCREEN) ---
 def render_screen(state):
     img_w, img_h = 600, 400
-    img = Image.new("RGB", (img_w, img_h), (25, 20, 35))
+    img = Image.new("RGB", (img_w, img_h), (35, 25, 45))
     draw = ImageDraw.Draw(img)
 
+    # Nạp Font chữ tiếng Việt từ thư mục assets
+    font_file = get_asset("font_regular.ttf")
     try:
-        font_name = ImageFont.truetype("arial.ttf", 22)
-        font_text = ImageFont.truetype("arial.ttf", 18)
+        if os.path.exists(font_file):
+            font_name = ImageFont.truetype(font_file, 24)
+            font_text = ImageFont.truetype(font_file, 20)
+        else:
+            font_name = font_text = ImageFont.load_default()
     except:
         font_name = font_text = ImageFont.load_default()
 
-    # 1. Vẽ Background (Nếu có file)
-    if os.path.exists(state.location):
+    # 1. Vẽ Background từ thư mục assets
+    bg_path = get_asset(state.location)
+    if os.path.exists(bg_path):
         try:
-            bg_img = Image.open(state.location).convert("RGBA")
+            bg_img = Image.open(bg_path).convert("RGBA")
             bg_img = bg_img.resize((img_w, img_h))
             img.paste(bg_img, (0, 0))
-        except: pass
+        except Exception as e:
+            print(f"Lỗi load BG: {e}")
+    else:
+        draw.rectangle([10, 10, img_w - 10, img_h - 10], outline=(255, 150, 200), width=2)
 
     if state.mode == "POEM":
         # Màn hình làm thơ
-        draw.rectangle([50, 30, 550, 370], fill=(40, 30, 50, 200))
-        draw.text((200, 40), f"📝 POEM MINIGAME ({state.poem_count} từ)", fill=(255, 150, 200), font=font_name)
+        draw.rectangle([40, 20, 560, 380], fill=(20, 15, 30), outline=(255, 100, 180), width=2)
+        draw.text((180, 35), f"📝 POEM MINIGAME ({state.poem_count} từ)", fill=(255, 150, 200), font=font_name)
         
         for idx, item in enumerate(state.poem_words):
-            cy = 100 + idx * 50
-            color = (255, 100, 180) if idx == state.poem_idx else (70, 50, 80)
-            draw.rectangle([100, cy, 500, cy + 40], fill=color)
-            draw.text((120, cy + 10), f"{idx+1}. {item['word']}", fill=(255,255,255), font=font_text)
+            cy = 90 + idx * 55
+            color = (255, 100, 180) if idx == state.poem_idx else (50, 35, 65)
+            draw.rectangle([80, cy, 520, cy + 45], fill=color, outline=(255, 180, 220), width=1)
+            draw.text((100, cy + 10), f"{idx+1}. {item['word']}", fill=(255, 255, 255), font=font_text)
             
     else:
-        # 2. Vẽ Nhân vật
-        char_file = f"{state.speaker.lower()}.png"
-        if os.path.exists(char_file):
+        # 2. Vẽ Sprite Nhân vật từ thư mục assets
+        char_path = get_asset(f"{state.speaker.lower()}.png")
+        if os.path.exists(char_path):
             try:
-                char_img = Image.open(char_file).convert("RGBA")
-                char_img = char_img.resize((250, 350))
-                img.paste(char_img, (175, 50), char_img)
-            except: pass
+                char_img = Image.open(char_path).convert("RGBA")
+                char_img = char_img.resize((220, 320))
+                img.paste(char_img, (190, 30), char_img)
+            except Exception as e:
+                print(f"Lỗi load Char: {e}")
+        else:
+            draw.rectangle([210, 60, 390, 250], fill=(60, 40, 70), outline=(255, 180, 200), width=2)
+            draw.text((230, 140), f"[{state.speaker}]", fill=(255, 180, 200), font=font_name)
             
-        # 3. Khung thoại
-        box_y1 = 280
-        draw.rectangle([20, box_y1, 580, 380], fill=(20, 15, 30, 220), outline=(255, 100, 180), width=3)
-        draw.rectangle([30, box_y1 - 15, 160, box_y1 + 15], fill=(255, 100, 180))
-        draw.text((40, box_y1 - 10), state.speaker, fill=(255, 255, 255), font=font_name)
+        # 3. Khung thoại (Dialogue Box)
+        box_y1 = 250
+        draw.rectangle([15, box_y1, 585, 385], fill=(20, 15, 30), outline=(255, 100, 180), width=3)
         
-        wrapped = textwrap.fill(state.text, width=55)
-        draw.text((35, box_y1 + 25), wrapped, fill=(240, 240, 240), font=font_text)
+        draw.rectangle([25, box_y1 - 18, 180, box_y1 + 15], fill=(255, 100, 180))
+        draw.text((35, box_y1 - 14), state.speaker, fill=(255, 255, 255), font=font_name)
+        
+        wrapped = textwrap.fill(state.text, width=42)
+        draw.text((30, box_y1 + 22), wrapped, fill=(245, 245, 245), font=font_text)
 
     buf = io.BytesIO()
     img.save(buf, format='PNG')
@@ -116,21 +138,25 @@ class GameControls(View):
         await interaction.response.defer()
         buf = render_screen(self.state)
         file = discord.File(fp=buf, filename="game.png")
-        embed = discord.Embed(title="DDLC: Mở Rộng", color=0xff77aa)
+        embed = discord.Embed(title="🎮 DDLC: THẾ GIỚI MỞ", color=0xff77aa)
         embed.set_image(url="attachment://game.png")
-        await interaction.message.edit(embed=embed, attachments=[file])
+        await interaction.message.edit(embed=embed, attachments=[file], view=self)
 
     @discord.ui.button(label="⬆️ Lên", style=discord.ButtonStyle.blurple, row=0)
     async def btn_up(self, interaction: discord.Interaction, button: Button):
         if self.state.mode == "POEM":
             self.state.poem_idx = (self.state.poem_idx - 1) % 4
             await self.handle_update(interaction)
+        else:
+            await interaction.response.defer()
 
     @discord.ui.button(label="⬇️ Xuống", style=discord.ButtonStyle.blurple, row=0)
     async def btn_down(self, interaction: discord.Interaction, button: Button):
         if self.state.mode == "POEM":
             self.state.poem_idx = (self.state.poem_idx + 1) % 4
             await self.handle_update(interaction)
+        else:
+            await interaction.response.defer()
 
     @discord.ui.button(label="🅰️ Chọn / Tiếp Tục", style=discord.ButtonStyle.green, row=1)
     async def btn_a(self, interaction: discord.Interaction, button: Button):
@@ -143,7 +169,7 @@ class GameControls(View):
                 st.mode = "STORY"
                 best_char = max(st.scores, key=st.scores.get)
                 st.speaker = best_char
-                st.text = f"Bài thơ Nam viết... tớ rất thích nó. Chúng ta ra ngoài dạo một lát không?"
+                st.text = f"Bài thơ Nam viết tuyệt quá! Tớ rất thích những cảm xúc này."
             else:
                 words = []
                 for c, w_list in POEM_WORDS.items():
@@ -153,7 +179,7 @@ class GameControls(View):
                 st.poem_idx = 0
             await self.handle_update(interaction)
         else:
-            await process_ai_story(self.ctx, st, "Người chơi ấn tiếp tục.")
+            await process_ai_story(self.ctx, st, "Người chơi ấn tiếp tục cốt truyện.")
             await self.handle_update(interaction)
 
     @discord.ui.button(label="📝 Viết Thơ", style=discord.ButtonStyle.danger, row=1)
@@ -169,64 +195,73 @@ class GameControls(View):
             random.shuffle(words)
             st.poem_words = words
             await self.handle_update(interaction)
+        else:
+            await interaction.response.defer()
 
 # --- XỬ LÝ CỐT TRUYỆN MỞ BẰNG AI ---
 async def process_ai_story(ctx, state, user_input):
-    if not ai_model: return
+    if not ai_model:
+        state.text = "AI chưa được cấu hình API Key!"
+        return
     
     prompt = f"""
-    Bạn là Game Engine quản lý thế giới mở DDLC. Cốt truyện có thể vượt ra khỏi trường học (VD: quán cafe, đường phố, nhà riêng, lễ hội...).
-    - Người chơi tên: Nam.
-    - Địa điểm hiện tại: {state.location}
+    Bạn là Game Engine quản lý thế giới mở DDLC. Cốt truyện có thể diễn ra ở trường hoặc mở rộng ra ngoài (như quán cafe, đường phố, công viên...).
+    - Người chơi: Nam.
+    - Địa điểm hiện tại (tên file): {state.location}
     - Điểm tình cảm: {state.scores}
-    - Hành động/Lời nói của Nam: {user_input}
+    - Hành động của Nam: {user_input}
     
-    Tạo tình tiết tiếp theo. Hãy quyết định xem có đổi cảnh hay không.
-    Trả về định dạng JSON nghiêm ngặt:
+    Tạo tình tiết tiếp theo ngắn gọn bằng tiếng Việt.
+    Trả về định dạng JSON nghiêm ngặt (không kèm markdown khác):
     {{
-        "speaker": "Tên nhân vật (hoặc 'Hệ Thống')",
-        "text": "Lời thoại hoặc mô tả tiếng Việt (tối đa 25 từ).",
+        "speaker": "Tên nhân vật (Monika, Sayori, Yuri hoặc Natsuki)",
+        "text": "Lời thoại hoặc mô tả (tối đa 25 từ).",
         "location": "clubroom.jpg hoặc street.jpg hoặc cafe.jpg hoặc park.jpg",
         "bgm": "club.mp3 hoặc street.mp3 hoặc romance.mp3"
     }}
     """
     try:
         res = ai_model.generate_content(prompt)
-        data = json.loads(res.text.replace("```json", "").replace("```", "").strip())
+        raw_text = res.text.replace("```json", "").replace("```", "").strip()
+        data = json.loads(raw_text)
+        
         state.speaker = data.get("speaker", state.speaker)
         state.text = data.get("text", "...")
-        new_loc = data.get("location", state.location)
+        state.location = data.get("location", state.location)
         
-        # Xử lý đổi nhạc nếu chuyển cảnh
+        # Đổi nhạc nền qua Voice Bot nếu có file nhạc tương ứng trong assets
         if "bgm" in data and state.voice_client and state.voice_client.is_connected():
-            bgm_file = data["bgm"]
+            bgm_file = get_asset(data["bgm"])
             if os.path.exists(bgm_file):
-                if state.voice_client.is_playing(): state.voice_client.stop()
+                if state.voice_client.is_playing():
+                    state.voice_client.stop()
                 state.voice_client.play(discord.FFmpegPCMAudio(bgm_file))
-                
-        state.location = new_loc
     except Exception as e:
-        print(e)
-        state.text = "Có vẻ mọi người đang suy nghĩ..."
+        print(f"Lỗi AI: {e}")
+        state.text = "Mọi người đang chăm chú lắng nghe bạn..."
 
 # --- LỆNH CHÍNH ---
 @bot.command(name="start")
 async def start_game(ctx):
+    await ctx.message.delete()
     state = get_session(ctx.guild.id)
     state.game_active = True
     
-    # Kết nối vào Voice Channel để phát nhạc
+    # Kết nối vào phòng Voice để phát nhạc nền
     if ctx.author.voice:
         channel = ctx.author.voice.channel
         try:
-            state.voice_client = await channel.connect()
-            if os.path.exists("club.mp3"):
-                state.voice_client.play(discord.FFmpegPCMAudio("club.mp3"))
-        except: pass
+            if not state.voice_client or not state.voice_client.is_connected():
+                state.voice_client = await channel.connect()
+            club_music = get_asset("club.mp3")
+            if os.path.exists(club_music) and not state.voice_client.is_playing():
+                state.voice_client.play(discord.FFmpegPCMAudio(club_music))
+        except Exception as e:
+            print(f"Lỗi Voice: {e}")
 
     buf = render_screen(state)
     file = discord.File(fp=buf, filename="game.png")
-    embed = discord.Embed(title="DDLC: THẾ GIỚI MỞ", color=0xff77aa)
+    embed = discord.Embed(title="🎮 DDLC: THẾ GIỚI MỞ", description="Sử dụng các nút bên dưới hoặc gõ lệnh `!chat <nội dung>` để trò chuyện!", color=0xff77aa)
     embed.set_image(url="attachment://game.png")
     
     view = GameControls(ctx, state)
@@ -236,17 +271,21 @@ async def start_game(ctx):
 async def player_chat(ctx, *, message: str):
     await ctx.message.delete()
     state = get_session(ctx.guild.id)
-    if not state.game_active: return
+    if not state.game_active:
+        return
     
     await process_ai_story(ctx, state, f"Nam nói/làm: {message}")
     
     buf = render_screen(state)
     file = discord.File(fp=buf, filename="game.png")
-    embed = discord.Embed(title="DDLC: THẾ GIỚI MỞ", description=f"🗣️ **Nam:** {message}", color=0xff77aa)
+    embed = discord.Embed(title="🎮 DDLC: THẾ GIỚI MỞ", description=f"🗣️ **Nam:** {message}", color=0xff77aa)
     embed.set_image(url="attachment://game.png")
     
     if state.last_msg:
-        await state.last_msg.edit(embed=embed, attachments=[file], view=GameControls(ctx, state))
+        try:
+            await state.last_msg.edit(embed=embed, attachments=[file], view=GameControls(ctx, state))
+        except:
+            state.last_msg = await ctx.send(embed=embed, file=file, view=GameControls(ctx, state))
 
 if __name__ == "__main__":
     threading.Thread(target=run_flask, daemon=True).start()
