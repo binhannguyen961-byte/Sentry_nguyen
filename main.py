@@ -83,6 +83,7 @@ class Block:
         self.out_val = False
         self.prev_val = False
         self.mem_state = False # Dùng cho FF, RAM
+        self.inputs = [] # Danh sách lưu tọa độ kết nối nguồn tín hiệu đầu vào [(x, y), ...]
 
 class AcademicWorld:
     def __init__(self):
@@ -105,9 +106,16 @@ class AcademicWorld:
                 b = self.grid[x][y]
                 if b.type == AIR: continue
                 
-                in1 = self.grid[x-1][y].prev_val if x > 0 else False
-                in2 = self.grid[x][y-1].prev_val if y > 0 else False # Phức tạp hóa luồng dữ liệu 2 chiều
-                clk_pulse = self.grid[x+1][y].prev_val if x < GRID_SIZE-1 else False
+                # Lấy danh sách tín hiệu đầu vào từ dây nối (nếu có connection)
+                input_vals = []
+                for ix, iy in b.inputs:
+                    if 0 <= ix < GRID_SIZE and 0 <= iy < GRID_SIZE:
+                        input_vals.append(self.grid[ix][iy].prev_val)
+
+                # Nếu không có dây nối thủ công, mặc định lấy ô lân cận
+                in1 = input_vals[0] if len(input_vals) > 0 else (self.grid[x-1][y].prev_val if x > 0 else False)
+                in2 = input_vals[1] if len(input_vals) > 1 else (self.grid[x][y-1].prev_val if y > 0 else False)
+                clk_pulse = input_vals[2] if len(input_vals) > 2 else (self.grid[x+1][y].prev_val if x < GRID_SIZE-1 else False)
 
                 if b.type == CLOCK: b.out_val = (self.tick_count % 2 == 0)
                 elif b.type == SWITCH: pass # Giữ nguyên trạng thái qua lệnh bot
@@ -134,6 +142,19 @@ class AcademicWorld:
         draw = ImageDraw.Draw(img)
         try: font = ImageFont.truetype("arial.ttf", max(10, cell_sz//3))
         except: font = ImageFont.load_default()
+
+        # Vẽ đường nối tín hiệu dây dẫn giữa các khối trong tầm nhìn
+        for vx in range(self.zoom):
+            for vy in range(self.zoom):
+                gx, gy = self.view_x + vx, self.view_y + vy
+                if 0 <= gx < GRID_SIZE and 0 <= gy < GRID_SIZE:
+                    b = self.grid[gx][gy]
+                    for ix, iy in b.inputs:
+                        if self.view_x <= ix < self.view_x + self.zoom and self.view_y <= iy < self.view_y + self.zoom:
+                            start_p = ((ix - self.view_x) * cell_sz + cell_sz // 2, (iy - self.view_y) * cell_sz + cell_sz // 2)
+                            end_p = (vx * cell_sz + cell_sz // 2, vy * cell_sz + cell_sz // 2)
+                            line_color = (0, 255, 150) if self.grid[ix][iy].out_val else (100, 100, 120)
+                            draw.line([start_p, end_p], fill=line_color, width=2)
 
         for vx in range(self.zoom):
             for vy in range(self.zoom):
@@ -199,6 +220,35 @@ async def set_block(ctx, block: str = None, x: int = None, y: int = None):
         env.grid[x][y] = Block(NAME_MAP[block.lower()])
         await update_board(ctx, env)
 
+@bot.command(name="connect", aliases=["con"])
+async def connect_nodes(ctx, *args):
+    """Lệnh nối dây: !connect <node1> <x1> <y1> to <node2> <x2> <y2>
+    Ví dụ: !con and 5 5 to pix 5 10
+    """
+    await safe_delete(ctx)
+    env = get_env(ctx.guild.id)
+    
+    # Chuẩn hóa chuỗi tham số
+    args_lower = [a.lower() for a in args]
+    if "to" not in args_lower: return
+    
+    to_idx = args_lower.index("to")
+    part1 = args_lower[:to_idx]
+    part2 = args_lower[to_idx+1:]
+    
+    try:
+        # Lấy tọa độ nút nguồn và nút đích
+        x1, y1 = int(part1[-2]), int(part1[-1])
+        x2, y2 = int(part2[-2]), int(part2[-1])
+        
+        if 0 <= x1 < GRID_SIZE and 0 <= y1 < GRID_SIZE and 0 <= x2 < GRID_SIZE and 0 <= y2 < GRID_SIZE:
+            # Nối tín hiệu từ (x1, y1) làm đầu vào cho (x2, y2)
+            if (x1, y1) not in env.grid[x2][y2].inputs:
+                env.grid[x2][y2].inputs.append((x1, y1))
+            await update_board(ctx, env)
+    except (ValueError, IndexError):
+        pass
+
 @bot.command(name="trigger")
 async def trigger_io(ctx, x: int, y: int):
     """Bật/tắt các khối đầu vào (Switch/Button)"""
@@ -234,10 +284,51 @@ async def run_step(ctx, steps: int = 1):
     for _ in range(min(steps, 100)): env.logic_step()
     await update_board(ctx, env)
 
+@bot.command(name="help", aliases=["trogiup", "h"])
+async def help_cmd(ctx):
+    """Lệnh trợ giúp hiển thị bảng danh sách hướng dẫn chi tiết"""
+    await safe_delete(ctx)
+    embed = discord.Embed(title="📚 ACADEMIC LOGIC SIMULATOR - HƯỚNG DẪN LỆNH", color=0x00ff7f)
+    
+    embed.add_field(
+        name="🛠️ XÂY DỰNG & KẾT NỐI",
+        value="`!set <tên_khối> <x> <y>` : Đặt khối tại tọa độ.\n"
+              "`!connect (hoặc !con) <nút1> <x1> <y1> to <nút2> <x2> <y2>` : Nối dây truyền tín hiệu từ nút 1 sang nút 2.\n"
+              "`!trigger <x> <y>` : Bật/Tắt công tắc (SWITCH) hoặc bấm nút (BUTTON).",
+        inline=False
+    )
+    
+    embed.add_field(
+        name="🔍 CAMERA & HIỂN THỊ",
+        value="`!map` : Hiển thị lại bảng mạch.\n"
+              "`!zoom <in/out> [số]` : Phóng to hoặc thu nhỏ góc nhìn.\n"
+              "`!pan <x> <y>` : Di chuyển tâm camera đến tọa độ mong muốn.",
+        inline=False
+    )
+    
+    embed.add_field(
+        name="⚡ VẬN HÀNH & MÔ PHỎNG",
+        value="`!step [số_tick]` (hoặc `!run`, `!tick`) : Chạy các chu kỳ xung nhịp truyền tín hiệu logic.",
+        inline=False
+    )
+
+    embed.add_field(
+        name="🔣 CÁC KHỐI LOGIC KHẢ DỤNG",
+        value="• I/O: `switch`, `button`, `clock`, `pix`\n"
+              "• Cổng logic: `and`, `or`, `not`, `nand`, `nor`, `xor`, `xnor`\n"
+              "• Lưu trữ: `dff`, `tff`, `sr`, `ram`\n"
+              "• Mạch tổ hợp: `mux`, `demux`, `add`",
+        inline=False
+    )
+    
+    msg = await ctx.send(embed=embed)
+    await asyncio.sleep(20)
+    try: await msg.delete()
+    except: pass
+
 @bot.command(name="edu")
 async def edu_info(ctx, gate: str):
     await safe_delete(ctx)
-    # Lệnh mở rộng kiến thức lý thuyết cho các cổng
     info = {
         "and": "Cổng AND (Y = A • B). Trả về TRUE khi TẤT CẢ đầu vào là TRUE.",
         "xor": "Cổng XOR (Y = A ⊕ B). Trả về TRUE khi đầu vào KHÁC NHAU. Dùng nhiều trong bộ cộng (Adder).",
@@ -247,7 +338,7 @@ async def edu_info(ctx, gate: str):
     desc = info.get(gate.lower(), "Vui lòng nhập cổng chuẩn: and, xor, dff, pix...")
     msg = await ctx.send(f"📚 **KIẾN THỨC LOGIC:** {desc}")
     await asyncio.sleep(10)
-    await msg.delete() # Xóa tin nhắn giáo dục sau 10s để giữ chat sạch
+    await msg.delete()
 
 if __name__ == "__main__":
     threading.Thread(target=run_flask, daemon=True).start()
