@@ -47,7 +47,7 @@ STORY_TREE = {
         ]
     },
 
-    # --- ROUTE: SAYORI ---
+    # SAYORI
     "route_sayori_street": {
         "chapter": 2, "speaker": "Sayori", "bg": "street_sayori.JPEG", "music": "happy_walk.mp3",
         "text": "Hehe! Tớ vui quá đi mất! Từ nay tớ sẽ làm vệ sĩ kiêm người đánh thức cậu mỗi sáng để cậu không gặp tai nạn ngốc nghếch nữa!",
@@ -61,7 +61,12 @@ STORY_TREE = {
     "route_sayori_cafe": {
         "chapter": 4, "speaker": "Sayori", "bg": "cafe_sayori.JPEG", "music": "cafe_chatter.mp3",
         "text": "Oa! Bánh dâu tây ở đây ngon tuyệt vời! Cậu có muốn thử một miếng không? Há miệng ra nàoooo... Aaaaa!",
-        "choices": [{"label": "Ăn thử bánh và về CLB", "next": "route_sayori_club"}]
+        "choices": [{"label": "Ăn thử bánh và tiếp tục đi dạo", "next": "route_sayori_walk"}]
+    },
+    "route_sayori_walk": {
+        "chapter": 4, "speaker": "Sayori", "bg": "street_evening.jpg",
+        "text": "Sau khi ăn bánh, cả hai cùng dạo chơi, trò chuyện nhiều hơn về ước mơ và những ngày tớ lười dậy. Khoảnh khắc này thật ấm áp.",
+        "choices": [{"label": "Quay lại CLB cùng Sayori", "next": "route_sayori_club"}]
     },
     "route_sayori_club": {
         "chapter": 5, "speaker": "Sayori", "bg": "club_sayori.jpg", "music": "club_warm.mp3",
@@ -69,7 +74,7 @@ STORY_TREE = {
         "choices": [{"label": "Chơi lại từ đầu", "next": "ch1_start"}]
     },
 
-    # --- ROUTE: MONIKA ---
+    # MONIKA
     "route_monika_street": {
         "chapter": 2, "speaker": "Monika", "bg": "street_monika.JPEG", "music": "soft_piano.mp3",
         "text": "Tớ rất vui vì cậu đã bình an. Những ngày cậu vắng mặt, không khí CLB buồn lắm.",
@@ -83,7 +88,12 @@ STORY_TREE = {
     "route_monika_cafe": {
         "chapter": 4, "speaker": "Monika", "bg": "cafe_monika.JPEG", "music": "cafe_piano.mp3",
         "text": "Cà phê đen không đường. Tớ luôn thích sự tĩnh lặng và hương vị nguyên bản của nó. Còn cậu thì sao? Cậu thích thế giới này chứ?",
-        "choices": [{"label": "Lắng nghe và về CLB", "next": "route_monika_club"}]
+        "choices": [{"label": "Lắng nghe và đến thư viện", "next": "route_monika_library"}]
+    },
+    "route_monika_library": {
+        "chapter": 4, "speaker": "Monika", "bg": "library_monika.jpg",
+        "text": "Trong thư viện, Monika đọc cho cậu nghe một đoạn thơ hiếm. Lắng nghe từng chữ, cậu cảm thấy thế giới trở nên sâu sắc hơn.",
+        "choices": [{"label": "Quay lại CLB cùng Monika", "next": "route_monika_club"}]
     },
     "route_monika_club": {
         "chapter": 5, "speaker": "Monika", "bg": "club_monika.JPEG", "music": "club_warm.mp3",
@@ -91,7 +101,7 @@ STORY_TREE = {
         "choices": [{"label": "Chơi lại từ đầu", "next": "ch1_start"}]
     },
 
-    # --- ROUTE: NATSUKI ---
+    # NATSUKI
     "route_natsuki_street": {
         "chapter": 2, "speaker": "Natsuki", "bg": "street_natsuki.JPEG", "music": "cute_bounce.mp3",
         "text": "Đ-Đừng có hiểu lầm! Tớ xách phụ đồ cho cậu chỉ vì cậu mới xuất viện thôi, không phải vì tớ lo lắng hay gì đâu nhé!",
@@ -105,7 +115,12 @@ STORY_TREE = {
     "route_natsuki_cafe": {
         "chapter": 4, "speaker": "Natsuki", "bg": "cafe_natsuki.JPEG", "music": "baking_loop.mp3",
         "text": "Mẻ bánh cupcake mới của tớ dạo này có công thức siêu đặc biệt đấy. Quán này làm đồ ngọt cũng được, nhưng chắc thua bánh của tớ!",
-        "choices": [{"label": "Hứa sẽ ăn bánh khi về CLB", "next": "route_natsuki_club"}]
+        "choices": [{"label": "Hứa sẽ ăn bánh khi về CLB", "next": "route_natsuki_bakery"}]
+    },
+    "route_natsuki_bakery": {
+        "chapter": 4, "speaker": "Natsuki", "bg": "bakery_natsuki.jpg",
+        "text": "Natsuki dẫn cậu đến tiệm bánh nhỏ của gia đình — cô chủ mỉm cười và tặng vài chiếc bánh mới nướng. Không khí ấm áp khiến cô bớt cáu hơn một chút.",
+        "choices": [{"label": "Quay lại CLB cùng Natsuki", "next": "route_natsuki_club"}]
     },
     "route_natsuki_club": {
         "chapter": 5, "speaker": "Natsuki", "bg": "club_natsuki.JPEG",
@@ -113,7 +128,7 @@ STORY_TREE = {
         "choices": [{"label": "Chơi lại từ đầu", "next": "ch1_start"}]
     },
 
-    # --- ROUTE: YURI ---
+    # YURI
     "route_yuri_street": {
         "chapter": 2, "speaker": "Yuri", "bg": "street_yuri.JPEG", "music": "soft_string.mp3",
         "text": "Tớ... tớ đã rất lo lắng. Những lúc cậu trong bệnh viện, tớ chỉ biết đọc sách để giữ cho tâm trí mình được bình tĩnh lại...",
@@ -127,7 +142,12 @@ STORY_TREE = {
     "route_yuri_cafe": {
         "chapter": 4, "speaker": "Yuri", "bg": "cafe_yuri.JPEG", "music": "tea_room.mp3",
         "text": "Hương trà Oolong ở quán này rất thanh tao. Nó giúp xoa dịu những nhịp đập vội vã trong lồng ngực...",
-        "choices": [{"label": "Tận hưởng trà chiều và về CLB", "next": "route_yuri_club"}]
+        "choices": [{"label": "Tận hưởng trà chiều và ghé hiệu sách", "next": "route_yuri_bookshop"}]
+    },
+    "route_yuri_bookshop": {
+        "chapter": 4, "speaker": "Yuri", "bg": "bookshop_yuri.jpg",
+        "text": "Trong hiệu sách cũ, Yuri chỉ cho cậu một cuốn sách cũ có dòng chữ được gạch tay. Cảm giác lạ lùng len vào tim.",
+        "choices": [{"label": "Quay lại CLB cùng Yuri", "next": "route_yuri_club"}]
     },
     "route_yuri_club": {
         "chapter": 5, "speaker": "Yuri", "bg": "club_yuri.jpg",
