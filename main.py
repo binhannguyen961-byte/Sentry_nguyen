@@ -31,7 +31,7 @@ def get_genai_client():
     return None, None
   active_key = api_keys[current_key_idx]
   current_key_idx = (current_key_idx + 1) % len(api_keys)
-  return genai.Client(api_key=active_key), "gemini-2.0-flash"
+  return genai.Client(api_key=active_key), "gemini-3.6flash"
 
 
 intents = discord.Intents.default()
